@@ -102,7 +102,7 @@ export function FinalVideoEditor({
   return (
     <div className="w-full space-y-6">
       <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-        <div className="space-y-6">
+        <div className="space-y-6 min-w-0">
           <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black">
             <video
               key={finalVideo.url}
@@ -134,25 +134,26 @@ export function FinalVideoEditor({
               selectedSegmentId={selectedSegmentId}
               onSeek={seek}
               onSegmentSelect={handleSegmentSelect}
+              renderAudioTrack={({ trackWidth }) => (
+                <div className="space-y-1">
+                  {!waveformData ? (
+                    <AudioUploadBox onAudioSelect={handleAudioSelect} disabled={isAudioLoading} />
+                  ) : (
+                    <AudioWaveformVisualization
+                      waveformData={waveformData}
+                      fileName={audioFile?.name || 'Audio Track'}
+                      isLoading={isAudioLoading}
+                      onRemove={handleRemoveAudio}
+                      currentTime={state.currentTime}
+                      duration={state.duration}
+                      onSelect={handleAudioTrackSelect}
+                      isSelected={inspectorView === 'audio'}
+                      trackWidth={trackWidth}
+                    />
+                  )}
+                </div>
+              )}
             />
-          </div>
-
-          {/* Audio Track */}
-          <div className="space-y-1">
-            {!waveformData ? (
-              <AudioUploadBox onAudioSelect={handleAudioSelect} disabled={isAudioLoading} />
-            ) : (
-              <AudioWaveformVisualization
-                waveformData={waveformData}
-                fileName={audioFile?.name || 'Audio Track'}
-                isLoading={isAudioLoading}
-                onRemove={handleRemoveAudio}
-                currentTime={state.currentTime}
-                duration={state.duration}
-                onSelect={handleAudioTrackSelect}
-                isSelected={inspectorView === 'audio'}
-              />
-            )}
           </div>
         </div>
 

@@ -15,6 +15,7 @@ interface AudioWaveformVisualizationProps {
   duration?: number;
   onSelect?: () => void;
   isSelected?: boolean;
+  trackWidth?: number;
 }
 
 export function AudioWaveformVisualization({
@@ -26,6 +27,7 @@ export function AudioWaveformVisualization({
   duration = 0,
   onSelect,
   isSelected = false,
+  trackWidth,
 }: AudioWaveformVisualizationProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -80,7 +82,7 @@ export function AudioWaveformVisualization({
       ctx.lineTo(progressX, height);
       ctx.stroke();
     }
-  }, [waveformData, currentTime, duration]);
+  }, [waveformData, currentTime, duration, trackWidth]);
 
   if (!waveformData) {
     return null;
@@ -99,7 +101,10 @@ export function AudioWaveformVisualization({
   };
 
   return (
-    <div className="w-full space-y-2">
+    <div
+      className="w-full space-y-2"
+      style={trackWidth ? { width: `${trackWidth}px` } : undefined}
+    >
       <div
         role={onSelect ? 'button' : undefined}
         tabIndex={onSelect ? 0 : undefined}

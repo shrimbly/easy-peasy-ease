@@ -69,27 +69,19 @@ export function getCurrentSegment(
 }
 
 /**
- * Convert time (seconds) to pixel position on timeline
+ * Convert time (seconds) to pixel position on timeline based on the zoomed scale
  */
-export function timeToPixels(
-  time: number,
-  totalDuration: number,
-  trackWidth: number
-): number {
-  if (totalDuration === 0) return 0;
-  return (time / totalDuration) * trackWidth;
+export function timeToPixels(time: number, pixelsPerSecond: number): number {
+  if (pixelsPerSecond === 0) return 0;
+  return time * pixelsPerSecond;
 }
 
 /**
  * Convert pixel position to time (seconds)
  */
-export function pixelsToTime(
-  pixels: number,
-  totalDuration: number,
-  trackWidth: number
-): number {
-  if (trackWidth === 0) return 0;
-  return (pixels / trackWidth) * totalDuration;
+export function pixelsToTime(pixels: number, pixelsPerSecond: number): number {
+  if (pixelsPerSecond === 0) return 0;
+  return pixels / pixelsPerSecond;
 }
 
 /**
