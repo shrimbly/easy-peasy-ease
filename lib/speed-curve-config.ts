@@ -14,8 +14,9 @@ export const MIN_OUTPUT_FRAME_DURATION = 1 / MAX_OUTPUT_FPS; // ~0.0167s
 // Sample aggregation thresholds
 export const MIN_SAMPLE_DURATION = 1 / 60000; // ultra-short aggregation to preserve eased ramps
 
-// Default bitrate - high quality to preserve source detail
-export const DEFAULT_BITRATE = 20e6; // 20 Mbps (source matching + quality)
+// Default bitrate / encoder tuning
+export const DEFAULT_BITRATE = 12_000_000; // 12 Mbps keeps quality without overloading decoders
+export const DEFAULT_KEYFRAME_INTERVAL = 0.5; // seconds between keyframes for stable seeking
 
 // Speed curve parameters
 export const DEFAULT_INPUT_DURATION = 5; // Kling videos are 5 seconds

@@ -63,9 +63,17 @@ export interface KlingVideoInput {
   mode?: 'standard' | 'pro';
 }
 
+export interface AudioTrack {
+  file: File | Blob;
+  url: string; // Object URL for preview/playback
+  name: string;
+  duration?: number;
+}
+
 export interface FinalVideo {
   blob: Blob;
   url: string; // Object URL for preview/download
   size: number; // File size in bytes
   createdAt: Date;
+  audioTrack?: AudioTrack;
 }

@@ -23,13 +23,13 @@ import {
   DEFAULT_BITRATE,
   TARGET_FRAME_RATE,
   TARGET_FRAME_DURATION,
-  MAX_OUTPUT_FPS,
   MIN_OUTPUT_FRAME_DURATION,
   MIN_SAMPLE_DURATION,
   DEFAULT_INPUT_DURATION,
   DEFAULT_OUTPUT_DURATION,
   DEFAULT_EASING,
 } from '@/lib/speed-curve-config';
+import { createAvcEncodingConfig } from '@/lib/video-encoding';
 
 interface SpeedCurveProgress {
   status: 'idle' | 'processing' | 'complete' | 'error';
@@ -178,11 +178,9 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         // Step 3: Create output with video source
         updateProgress('processing', 'Creating output...', 20);
 
-        const videoSource = new VideoSampleSource({
-          codec: 'avc', // H.264
-          bitrate: resolvedBitrate,
-          keyFrameInterval: 1 / MAX_OUTPUT_FPS,
-        });
+        const videoSource = new VideoSampleSource(
+          createAvcEncodingConfig(resolvedBitrate)
+        );
 
         const bufferTarget = new BufferTarget();
         const output = new Output({

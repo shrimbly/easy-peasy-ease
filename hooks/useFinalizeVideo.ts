@@ -3,12 +3,13 @@
 import { useState, useCallback } from 'react';
 import { useApplySpeedCurve } from './useApplySpeedCurve';
 import { useStitchVideos } from './useStitchVideos';
+import { useAudioMixing } from './useAudioMixing';
 import { TransitionVideo } from '@/lib/types';
 import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from '@/lib/speed-curve-config';
 import { createBezierEasing, type EasingFunction } from '@/lib/easing-functions';
 
 interface FinalizeProgress {
-  stage: 'idle' | 'applying-curves' | 'stitching' | 'complete' | 'error';
+  stage: 'idle' | 'applying-curves' | 'mixing-audio' | 'stitching' | 'complete' | 'error';
   message: string;
   progress: number; // 0-100
   currentVideo?: number;
@@ -20,7 +21,8 @@ interface UseFinalizeVideoReturn {
   finalizeVideos: (
     transitionVideos: TransitionVideo[],
     onProgress?: (progress: FinalizeProgress) => void,
-    inputDuration?: number
+    inputDuration?: number,
+    audioBlob?: Blob
   ) => Promise<Blob | null>;
   progress: FinalizeProgress;
   reset: () => void;
@@ -40,12 +42,14 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
 
   const { applySpeedCurve } = useApplySpeedCurve();
   const { stitchVideos } = useStitchVideos();
+  const { prepareAudio } = useAudioMixing();
 
   const finalizeVideos = useCallback(
     async (
       transitionVideos: TransitionVideo[],
       onProgress?: (progress: FinalizeProgress) => void,
-      inputDuration: number = 5
+      inputDuration: number = 5,
+      audioBlob?: Blob
     ): Promise<Blob | null> => {
       try {
         // Validate inputs
@@ -143,11 +147,56 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
           }
         }
 
-        // Step 2: Stitch all speed-curved videos together
+        // Step 2: Prepare audio if provided
+        let audioData: any = undefined;
+        let totalVideoDuration = 0;
+
+        // Calculate total video duration
+        if (speedCurvedBlobs.length > 0) {
+          // Each video has a duration set by the user, sum them up
+          totalVideoDuration = transitionVideos
+            .filter((v) => v.url && !v.loading)
+            .reduce((sum, v) => sum + (v.duration ?? 1.5), 0);
+        }
+
+        if (audioBlob) {
+          const audioMixProgress: FinalizeProgress = {
+            stage: 'mixing-audio',
+            message: 'Preparing audio track...',
+            progress: 50,
+            totalVideos,
+          };
+          setProgress(audioMixProgress);
+          onProgress?.(audioMixProgress);
+
+          try {
+            audioData = await prepareAudio(
+              audioBlob,
+              totalVideoDuration,
+              (mixProgress) => {
+                const overallProgress = 50 + (mixProgress.progress / 100) * 25;
+                const progressUpdate: FinalizeProgress = {
+                  stage: 'mixing-audio',
+                  message: mixProgress.message,
+                  progress: overallProgress,
+                  totalVideos,
+                };
+                setProgress(progressUpdate);
+                onProgress?.(progressUpdate);
+              }
+            );
+          } catch (audioError) {
+            const errorMsg = audioError instanceof Error ? audioError.message : 'Failed to process audio';
+            console.warn('Audio processing error, continuing without audio:', audioError);
+            // Continue without audio rather than failing completely
+          }
+        }
+
+        // Step 3: Stitch all speed-curved videos together with audio
         const stitchStartProgress: FinalizeProgress = {
           stage: 'stitching',
           message: 'Stitching videos together...',
-          progress: 50,
+          progress: audioData ? 75 : 50,
           totalVideos,
         };
         setProgress(stitchStartProgress);
@@ -156,7 +205,9 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
         const finalBlob = await stitchVideos(
           speedCurvedBlobs,
           (stitchProgress) => {
-            const overallProgress = 50 + (stitchProgress.progress / 100) * 50;
+            const baseProgress = audioData ? 75 : 50;
+            const rangeProgress = audioData ? 25 : 50;
+            const overallProgress = baseProgress + (stitchProgress.progress / 100) * rangeProgress;
             const progressUpdate: FinalizeProgress = {
               stage: 'stitching',
               message: stitchProgress.message,
@@ -166,7 +217,9 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
             };
             setProgress(progressUpdate);
             onProgress?.(progressUpdate);
-          }
+          },
+          undefined, // Use default bitrate
+          audioData
         );
 
         if (!finalBlob) {
@@ -201,7 +254,7 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
         return null;
       }
     },
-    [applySpeedCurve, stitchVideos]
+    [applySpeedCurve, stitchVideos, prepareAudio]
   );
 
   const reset = useCallback(() => {

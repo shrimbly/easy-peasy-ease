@@ -11,6 +11,9 @@ import { useVideoPlayback } from '@/hooks/useVideoPlayback';
 import { VideoPlaybackControls } from '@/components/VideoPlaybackControls';
 import { VideoTimeline } from '@/components/VideoTimeline';
 import { getCurrentSegment } from '@/lib/timeline-utils';
+import { AudioUploadBox } from '@/components/AudioUploadBox';
+import { AudioWaveformVisualization } from '@/components/AudioWaveformVisualization';
+import { useAudioVisualization } from '@/hooks/useAudioVisualization';
 
 interface FinalVideoEditorProps {
   finalVideo: FinalVideo;
@@ -23,7 +26,7 @@ interface FinalVideoEditorProps {
   onBezierChange: (id: number, bezier: [number, number, number, number], applyAll?: boolean) => void;
   defaultBezier: [number, number, number, number];
   onCloneSegmentSettings: (id: number) => void;
-  onUpdateVideo: () => void;
+  onUpdateVideo: (audioBlob?: Blob) => void;
   isUpdating: boolean;
   onExit: () => void;
   onDownload: () => void;
@@ -47,6 +50,10 @@ export function FinalVideoEditor({
 }: FinalVideoEditorProps) {
   const selectedSegment = segments.find((segment) => segment.id === selectedSegmentId) ?? null;
   const [applyAll, setApplyAll] = useState(false);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+
+  // Audio visualization
+  const { waveformData, isLoading: isAudioLoading } = useAudioVisualization(audioFile);
 
   // Video playback control
   const { videoRef, state, togglePlayPause, seek } = useVideoPlayback((currentTime) => {
@@ -57,12 +64,21 @@ export function FinalVideoEditor({
     }
   });
 
+  const handleAudioSelect = (file: File) => {
+    setAudioFile(file);
+  };
+
+  const handleRemoveAudio = () => {
+    setAudioFile(null);
+  };
+
   return (
     <div className="w-full space-y-6">
       <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
         <div className="space-y-6">
           <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black">
             <video
+              key={finalVideo.url}
               ref={videoRef}
               src={finalVideo.url}
               loop
@@ -84,13 +100,7 @@ export function FinalVideoEditor({
           </div>
 
           {/* Timeline */}
-          <div className="space-y-2">
-            <div>
-              <h4 className="text-base font-semibold text-foreground">Timeline</h4>
-              <p className="text-xs text-muted-foreground">
-                Click to seek, drag the playhead to scrub, or select segments to edit.
-              </p>
-            </div>
+          <div>
             <VideoTimeline
               segments={segments}
               currentTime={state.currentTime}
@@ -98,6 +108,22 @@ export function FinalVideoEditor({
               onSeek={seek}
               onSegmentSelect={onSelectSegment}
             />
+          </div>
+
+          {/* Audio Track */}
+          <div className="space-y-1">
+            {!waveformData ? (
+              <AudioUploadBox onAudioSelect={handleAudioSelect} disabled={isAudioLoading} />
+            ) : (
+              <AudioWaveformVisualization
+                waveformData={waveformData}
+                fileName={audioFile?.name || 'Audio Track'}
+                isLoading={isAudioLoading}
+                onRemove={handleRemoveAudio}
+                currentTime={state.currentTime}
+                duration={state.duration}
+              />
+            )}
           </div>
         </div>
 
@@ -194,7 +220,7 @@ export function FinalVideoEditor({
                   </label>
                   <Button
                     size="sm"
-                    onClick={() => onUpdateVideo()}
+                    onClick={() => onUpdateVideo(audioFile ?? undefined)}
                     disabled={isUpdating}
                     className="gap-2 w-full mt-2"
                   >

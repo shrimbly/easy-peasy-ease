@@ -5,7 +5,15 @@ import { motion, useMotionValue, useMotionTemplate, animate } from "motion/react
 
 import { cn } from "@/lib/utils"
 
-interface LightRaysProps extends React.HTMLAttributes<HTMLDivElement> {
+interface LightRaysProps extends Omit<
+  React.HTMLAttributes<HTMLDivElement>,
+  | 'onDrag'
+  | 'onDragStart'
+  | 'onDragEnd'
+  | 'onAnimationStart'
+  | 'onAnimationEnd'
+  | 'onAnimationIteration'
+> {
   ref?: React.Ref<HTMLDivElement>
   count?: number
   color?: string

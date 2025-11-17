@@ -6,15 +6,17 @@ import {
   Output,
   VideoSampleSink,
   VideoSampleSource,
+  AudioBufferSource,
   BlobSource,
   ALL_FORMATS,
   BufferTarget,
   Mp4OutputFormat,
+  getFirstEncodableAudioCodec,
 } from 'mediabunny';
 import {
   DEFAULT_BITRATE,
-  MAX_OUTPUT_FPS,
 } from '@/lib/speed-curve-config';
+import { createAvcEncodingConfig } from '@/lib/video-encoding';
 
 interface StitchProgress {
   status: 'idle' | 'processing' | 'complete' | 'error';
@@ -25,11 +27,17 @@ interface StitchProgress {
   error?: string;
 }
 
+interface AudioData {
+  buffer: AudioBuffer;
+  duration: number;
+}
+
 interface UseStitchVideosReturn {
   stitchVideos: (
     videoBlobs: Blob[],
     onProgress?: (progress: StitchProgress) => void,
-    bitrate?: number
+    bitrate?: number,
+    audioData?: AudioData
   ) => Promise<Blob | null>;
   progress: StitchProgress;
   reset: () => void;
@@ -50,7 +58,8 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
     async (
       videoBlobs: Blob[],
       onProgress?: (progress: StitchProgress) => void,
-      bitrate: number = DEFAULT_BITRATE
+      bitrate: number = DEFAULT_BITRATE,
+      audioData?: AudioData
     ): Promise<Blob | null> => {
       try {
         // Reset progress
@@ -88,11 +97,9 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
         // Create output once
         updateProgress('processing', 'Creating output container...', 5);
 
-        const videoSource = new VideoSampleSource({
-          codec: 'avc', // H.264
-          bitrate,
-          keyFrameInterval: 1 / MAX_OUTPUT_FPS,
-        });
+        const videoSource = new VideoSampleSource(
+          createAvcEncodingConfig(bitrate)
+        );
 
         const bufferTarget = new BufferTarget();
         const output = new Output({
@@ -101,6 +108,37 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
         });
 
         output.addVideoTrack(videoSource);
+
+        // Add audio track if provided
+        let audioSource: AudioBufferSource | undefined;
+        let pendingAudioBuffer: AudioBuffer | null = null;
+        if (audioData) {
+          updateProgress('processing', 'Detecting supported audio codec...', 8);
+
+          // Detect the best supported audio codec for MP4
+          // Try common codecs in order of preference: aac, opus, mp3
+          const audioCodec = await getFirstEncodableAudioCodec(['aac', 'opus', 'mp3'], {
+            numberOfChannels: audioData.buffer.numberOfChannels,
+            sampleRate: audioData.buffer.sampleRate,
+            bitrate: 128000,
+          });
+
+          if (!audioCodec) {
+            console.warn('No supported audio codec found, continuing without audio');
+          } else {
+            updateProgress('processing', `Adding audio track (${audioCodec})...`, 10);
+
+            // Create audio source from the decoded audio buffer
+            audioSource = new AudioBufferSource({
+              codec: audioCodec,
+              bitrate: 128000,
+            });
+
+            output.addAudioTrack(audioSource);
+            pendingAudioBuffer = audioData.buffer;
+          }
+        }
+
         await output.start();
 
         // Track cumulative time for proper sequencing
@@ -178,7 +216,14 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
           }
         }
 
-        updateProgress('processing', 'Finalizing stitched video...', 95);
+        // Encode audio after all video frames have been queued so container metadata stays accurate
+        if (audioSource && pendingAudioBuffer) {
+          updateProgress('processing', 'Encoding audio track...', 92);
+          await audioSource.add(pendingAudioBuffer);
+          audioSource.close();
+        }
+
+        updateProgress('processing', 'Finalizing stitched video...', 97);
 
         // Finalize output
         await output.finalize();

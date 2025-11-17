@@ -144,11 +144,11 @@ export default function Home() {
     );
   };
 
-  const handleReapplyFinalVideo = async () => {
-    await handleFinalizeVideo();
+  const handleReapplyFinalVideo = async (audioBlob?: Blob) => {
+    await handleFinalizeVideo(undefined, audioBlob);
   };
 
-  const handleFinalizeVideo = async (segmentsOverride?: TransitionVideo[]) => {
+  const handleFinalizeVideo = async (segmentsOverride?: TransitionVideo[], audioBlob?: Blob) => {
     try {
       setIsFinalizingVideo(true);
       setFinalizationProgress(0);
@@ -162,14 +162,20 @@ export default function Home() {
           setFinalizationProgress(progress.progress);
           setFinalizationMessage(progress.message);
         },
-        1.5
+        1.5,
+        audioBlob
       );
 
       if (!finalBlob) {
         throw new Error('Failed to finalize video');
       }
 
-      // Create object URL for preview and download
+      // Revoke old object URL to free memory
+      if (finalVideo?.url) {
+        URL.revokeObjectURL(finalVideo.url);
+      }
+
+      // Create new object URL for preview and download
       const objectUrl = URL.createObjectURL(finalBlob);
 
       setFinalVideo({
