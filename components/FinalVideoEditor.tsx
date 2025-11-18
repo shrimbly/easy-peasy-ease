@@ -1,6 +1,6 @@
 'use client';
 
-import { ChangeEvent, useState } from 'react';
+import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FinalVideo, TransitionVideo, AudioProcessingOptions } from '@/lib/types';
 import { Label } from '@/components/ui/label';
 import { CubicBezierEditor } from '@/components/CubicBezierEditor';
@@ -28,6 +28,7 @@ import { AudioWaveformVisualization } from '@/components/AudioWaveformVisualizat
 import { useAudioVisualization } from '@/hooks/useAudioVisualization';
 
 const LOOP_OPTIONS = [1, 2, 3] as const;
+const BEZIER_THROTTLE_MS = 75;
 
 interface FinalVideoEditorProps {
   finalVideo: FinalVideo;
@@ -48,7 +49,9 @@ interface FinalVideoEditorProps {
   onLoopCountChange: (next: number) => void;
 }
 
-export function FinalVideoEditor({
+export const FinalVideoEditor = memo(FinalVideoEditorComponent);
+
+function FinalVideoEditorComponent({
   finalVideo,
   segments,
   selectedSegmentId,
@@ -66,7 +69,10 @@ export function FinalVideoEditor({
   loopCount,
   onLoopCountChange,
 }: FinalVideoEditorProps) {
-  const selectedSegment = segments.find((segment) => segment.id === selectedSegmentId) ?? null;
+  const selectedSegment = useMemo(
+    () => segments.find((segment) => segment.id === selectedSegmentId) ?? null,
+    [segments, selectedSegmentId]
+  );
   const [applyAll, setApplyAll] = useState(false);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [inspectorView, setInspectorView] = useState<'segments' | 'audio'>('segments');
@@ -76,18 +82,119 @@ export function FinalVideoEditor({
   });
   const [updatePromptReason, setUpdatePromptReason] = useState<'loop' | 'audio' | null>(null);
   const [timelineZoom, setTimelineZoom] = useState(0);
+  const [localCurve, setLocalCurve] = useState<[number, number, number, number] | null>(null);
+  const bezierPendingRef = useRef<{
+    segmentId: number;
+    bezier: [number, number, number, number];
+    applyAll: boolean;
+  } | null>(null);
+  const bezierTimeoutRef = useRef<number | null>(null);
 
-  const totalTimelineDuration = getTotalDuration(segments);
+  const totalTimelineDuration = useMemo(() => getTotalDuration(segments), [segments]);
   const timelineZoomDisabled =
     totalTimelineDuration === 0 || totalTimelineDuration <= TIMELINE_MIN_VISIBLE_SECONDS;
 
   // Audio visualization
   const { waveformData, isLoading: isAudioLoading } = useAudioVisualization(audioFile);
 
-  const handleSegmentSelect = (segmentId: number) => {
-    setInspectorView('segments');
-    onSelectSegment(segmentId);
-  };
+  const flushPendingBezier = useCallback(
+    (
+      overridePayload?: {
+        segmentId: number;
+        bezier: [number, number, number, number];
+        applyAll: boolean;
+      }
+    ) => {
+      const payload = overridePayload ?? bezierPendingRef.current;
+      if (!payload) return;
+      bezierPendingRef.current = null;
+      if (bezierTimeoutRef.current !== null) {
+        clearTimeout(bezierTimeoutRef.current);
+        bezierTimeoutRef.current = null;
+      }
+      onBezierChange(payload.segmentId, payload.bezier, payload.applyAll);
+    },
+    [onBezierChange]
+  );
+
+  useEffect(() => {
+    return () => {
+      flushPendingBezier();
+    };
+  }, [flushPendingBezier]);
+
+  const scheduleBezierChange = useCallback(
+    (segmentId: number, bezier: [number, number, number, number], applyToAll: boolean) => {
+      bezierPendingRef.current = { segmentId, bezier, applyAll: applyToAll };
+      if (bezierTimeoutRef.current !== null) {
+        return;
+      }
+      bezierTimeoutRef.current = window.setTimeout(() => {
+        bezierTimeoutRef.current = null;
+        flushPendingBezier();
+      }, BEZIER_THROTTLE_MS);
+    },
+    [flushPendingBezier]
+  );
+
+  const baseCurveValue = useMemo(() => {
+    if (!selectedSegment) return defaultBezier;
+    if (selectedSegment.useCustomEasing && selectedSegment.customBezier) {
+      return selectedSegment.customBezier;
+    }
+    if (selectedSegment.easingPreset) {
+      return getPresetBezier(selectedSegment.easingPreset);
+    }
+    return defaultBezier;
+  }, [defaultBezier, selectedSegment]);
+
+  useEffect(() => {
+    setLocalCurve(null);
+  }, [selectedSegmentId]);
+
+  useEffect(() => {
+    if (!localCurve) return;
+    const isMatching =
+      Math.abs(localCurve[0] - baseCurveValue[0]) < 1e-4 &&
+      Math.abs(localCurve[1] - baseCurveValue[1]) < 1e-4 &&
+      Math.abs(localCurve[2] - baseCurveValue[2]) < 1e-4 &&
+      Math.abs(localCurve[3] - baseCurveValue[3]) < 1e-4;
+    if (isMatching) {
+      setLocalCurve(null);
+    }
+  }, [baseCurveValue, localCurve]);
+
+  const curveValue = localCurve ?? baseCurveValue;
+
+  const handleBezierChange = useCallback(
+    (nextValue: [number, number, number, number]) => {
+      if (!selectedSegment) return;
+      setLocalCurve(nextValue);
+      scheduleBezierChange(selectedSegment.id, nextValue, applyAll);
+    },
+    [applyAll, scheduleBezierChange, selectedSegment]
+  );
+
+  const handleBezierCommit = useCallback(
+    (finalValue: [number, number, number, number]) => {
+      if (!selectedSegment) return;
+      setLocalCurve(finalValue);
+      flushPendingBezier({
+        segmentId: selectedSegment.id,
+        bezier: finalValue,
+        applyAll,
+      });
+    },
+    [applyAll, flushPendingBezier, selectedSegment]
+  );
+
+  const handleSegmentSelect = useCallback(
+    (segmentId: number) => {
+      setInspectorView('segments');
+      onSelectSegment(segmentId);
+    },
+    [onSelectSegment]
+  );
 
   // Video playback control
   const { videoRef, state, togglePlayPause, seek } = useVideoPlayback((currentTime) => {
@@ -98,22 +205,22 @@ export function FinalVideoEditor({
     }
   });
 
-  const handleAudioSelect = (file: File) => {
+  const handleAudioSelect = useCallback((file: File) => {
     setAudioFile(file);
     setUpdatePromptReason('audio');
-  };
+  }, []);
 
-  const handleRemoveAudio = () => {
+  const handleRemoveAudio = useCallback(() => {
     setAudioFile(null);
     if (inspectorView === 'audio') {
       setInspectorView('segments');
     }
-  };
+  }, [inspectorView]);
 
-  const handleAudioTrackSelect = () => {
+  const handleAudioTrackSelect = useCallback(() => {
     if (!waveformData) return;
     setInspectorView('audio');
-  };
+  }, [waveformData]);
 
   const updateAudioSetting = (property: 'fadeIn' | 'fadeOut', value: number) => {
     const sanitizedValue = Number.isNaN(value) ? 0 : value;
@@ -123,12 +230,15 @@ export function FinalVideoEditor({
     }));
   };
 
-  const handleLoopDropdownChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    const nextValue = Number(event.target.value);
-    if (nextValue === loopCount) return;
-    onLoopCountChange(nextValue);
-    setUpdatePromptReason('loop');
-  };
+  const handleLoopDropdownChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const nextValue = Number(event.target.value);
+      if (nextValue === loopCount) return;
+      onLoopCountChange(nextValue);
+      setUpdatePromptReason('loop');
+    },
+    [loopCount, onLoopCountChange]
+  );
 
   const handleVideoUpdate = () => {
     onUpdateVideo({
@@ -322,10 +432,6 @@ export function FinalVideoEditor({
               </div>
             ) : selectedSegment ? (
               (() => {
-                const curveValue =
-                  selectedSegment.customBezier ??
-                  getPresetBezier(selectedSegment.easingPreset ?? null) ??
-                  defaultBezier;
                 const loopIterationLabel =
                   selectedSegment.loopIteration && selectedSegment.loopIteration > 1
                     ? `Loop ${selectedSegment.loopIteration}`
@@ -396,7 +502,8 @@ export function FinalVideoEditor({
                   </div>
                   <CubicBezierEditor
                     value={curveValue}
-                    onChange={(nextValue) => onBezierChange(selectedSegment.id, nextValue, applyAll)}
+                    onChange={handleBezierChange}
+                    onCommit={handleBezierCommit}
                   />
                   <p className="text-xs text-muted-foreground">
                     Drag the control points to sculpt a bespoke ease-in/ease-out profile for this

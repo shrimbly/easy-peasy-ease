@@ -352,7 +352,7 @@ export default function Home() {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-background overflow-hidden">
+    <div className="relative flex min-h-[calc(100vh-80px)] items-center justify-center bg-background overflow-hidden pb-20 sm:pb-24">
       <LightRays
         className="absolute inset-0 z-0"
         color={isDropZoneHovered ? "rgba(160, 210, 255, 0.17)" : "rgba(160, 210, 255, 0.15)"}
@@ -434,7 +434,7 @@ export default function Home() {
             />
             {uploadedVideos.length === 0 && (
               <p className="max-w-lg text-lg text-muted-foreground">
-                Apply custom easing curves to your videos
+                Stitch and apply ease curves to short videos.
               </p>
             )}
           </div>

@@ -134,6 +134,7 @@ export function VideoTimeline({
   const viewportRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [thumbnails, setThumbnails] = useState<Record<number, string>>({});
+  const thumbnailCacheRef = useRef<Map<string, string>>(new Map());
   const [viewportWidth, setViewportWidth] = useState(0);
 
   const totalDuration = getTotalDuration(segments);
@@ -202,24 +203,43 @@ export function VideoTimeline({
 
   // Extract thumbnails for each segment
   useEffect(() => {
-    const loadThumbnails = async () => {
-      const newThumbnails: Record<number, string> = {};
+    let isCancelled = false;
+    const pendingKeys = new Set<string>();
 
-      for (const segment of segments) {
-        if (segment.url && !segment.loading) {
-          try {
-            const thumbnail = await extractVideoThumbnail(segment.url, 0);
-            newThumbnails[segment.id] = thumbnail;
-          } catch (error) {
-            console.error(`Failed to extract thumbnail for segment ${segment.id}:`, error);
-          }
-        }
+    segments.forEach((segment) => {
+      if (!segment.url || segment.loading) return;
+      const key = `${segment.url}`;
+      const cached = thumbnailCacheRef.current.get(key);
+
+      if (cached) {
+        setThumbnails((prev) => {
+          if (prev[segment.id] === cached) return prev;
+          return { ...prev, [segment.id]: cached };
+        });
+        return;
       }
 
-      setThumbnails(newThumbnails);
-    };
+      if (pendingKeys.has(key)) return;
+      pendingKeys.add(key);
 
-    loadThumbnails();
+      extractVideoThumbnail(segment.url, 0)
+        .then((thumbnail) => {
+          if (isCancelled) return;
+          thumbnailCacheRef.current.set(key, thumbnail);
+          setThumbnails((prev) => {
+            if (prev[segment.id] === thumbnail) return prev;
+            return { ...prev, [segment.id]: thumbnail };
+          });
+        })
+        .catch((error) => {
+          console.error(`Failed to extract thumbnail for segment ${segment.id}:`, error);
+          thumbnailCacheRef.current.delete(key);
+        });
+    });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [segments]);
 
   // Handle click on timeline to seek
