@@ -72,7 +72,7 @@ export default function RootLayout({
               target="_blank"
               rel="noreferrer"
             >
-              gh
+              code
             </a>{" "}
             —{" "}
             <a
