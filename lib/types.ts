@@ -13,6 +13,7 @@ export interface TransitionVideo {
   useCustomEasing?: boolean;
   customBezier?: [number, number, number, number];
   loopIteration?: number;
+  file?: File | Blob;
 }
 
 export interface AudioTrack {

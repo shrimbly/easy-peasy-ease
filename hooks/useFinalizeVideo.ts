@@ -94,12 +94,18 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
           }
 
           try {
-            // Fetch video blob from URL
-            const response = await fetch(video.url);
-            if (!response.ok) {
-              throw new Error(`Failed to fetch video: ${response.statusText}`);
+            // Fetch video blob from URL or use cached file
+            let videoBlob: Blob;
+
+            if (segmentMetadata.file) {
+              videoBlob = segmentMetadata.file;
+            } else {
+              const response = await fetch(video.url);
+              if (!response.ok) {
+                throw new Error(`Failed to fetch video: ${response.statusText}`);
+              }
+              videoBlob = await response.blob();
             }
-            const videoBlob = await response.blob();
 
             // Update progress
             const curveProgress = ((i) / totalVideos) * 50;
