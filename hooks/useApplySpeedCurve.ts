@@ -28,8 +28,9 @@ import {
   DEFAULT_INPUT_DURATION,
   DEFAULT_OUTPUT_DURATION,
   DEFAULT_EASING,
+  MAX_OUTPUT_FPS,
 } from '@/lib/speed-curve-config';
-import { createAvcEncodingConfig } from '@/lib/video-encoding';
+import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 
 interface SpeedCurveProgress {
   status: 'idle' | 'processing' | 'complete' | 'error';
@@ -50,6 +51,23 @@ interface UseApplySpeedCurveReturn {
   progress: SpeedCurveProgress;
   reset: () => void;
 }
+
+// Helper to get video dimensions
+const getVideoDimensions = (blob: Blob): Promise<{ width: number; height: number }> => {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => {
+      resolve({ width: video.videoWidth, height: video.videoHeight });
+      URL.revokeObjectURL(video.src);
+    };
+    video.onerror = () => {
+       reject(new Error('Failed to load video metadata'));
+       URL.revokeObjectURL(video.src);
+    };
+    video.src = URL.createObjectURL(blob);
+  });
+};
 
 /**
  * Hook for applying speed curves to video using Mediabunny
@@ -114,7 +132,7 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         const sink = new VideoSampleSink(videoTrack);
 
         // Analyze metadata up front so we can adapt easing to the source
-        const [trackDuration, containerDuration, packetStats] = await Promise.all([
+        const [trackDuration, containerDuration, packetStats, dimensions] = await Promise.all([
           videoTrack.computeDuration().catch(() => null),
           input.computeDuration().catch(() => null),
           videoTrack
@@ -123,6 +141,10 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
               console.warn('Failed to compute packet stats', statsError);
               return null;
             }),
+          getVideoDimensions(videoBlob).catch((e) => {
+             console.warn('Failed to get video dimensions', e);
+             return { width: 1920, height: 1080 }; // Fallback
+          })
         ]);
 
         let resolvedBitrate = Number.isFinite(bitrate) ? bitrate : DEFAULT_BITRATE;
@@ -176,10 +198,87 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         );
 
         // Step 3: Create output with video source
-        updateProgress('processing', 'Creating output...', 20);
+        updateProgress('processing', 'Configuring encoder...', 20);
+
+        // Determine best supported resolution/bitrate
+        const sourceWidth = dimensions.width;
+        const sourceHeight = dimensions.height;
+        
+        // Helper to check support
+        const checkSupport = async (config: VideoEncoderConfig) => {
+          try {
+            const support = await VideoEncoder.isConfigSupported(config);
+            return support.supported;
+          } catch (e) {
+            console.warn('Encoder support check failed', e);
+            return false;
+          }
+        };
+
+        // Define fallback tiers
+        const tiers = [
+          // Tier 1: Original Resolution (if 4K or high bitrate)
+          {
+            width: sourceWidth,
+            height: sourceHeight,
+            bitrate: resolvedBitrate,
+            codec: AVC_LEVEL_5_1,
+            label: 'Original'
+          },
+          // Tier 2: 1080p (Max 15Mbps)
+          {
+            width: Math.min(sourceWidth, 1920),
+            height: Math.min(sourceHeight, 1080),
+            bitrate: Math.min(resolvedBitrate, 15_000_000),
+            codec: AVC_LEVEL_4_0,
+            label: '1080p'
+          },
+          // Tier 3: 720p (Max 5Mbps)
+          {
+            width: Math.min(sourceWidth, 1280),
+            height: Math.min(sourceHeight, 720),
+            bitrate: Math.min(resolvedBitrate, 5_000_000),
+            codec: 'avc1.42001f', // Level 3.1
+            label: '720p'
+          }
+        ];
+
+        let selectedConfig = tiers[tiers.length - 1]; // Default to lowest
+        
+        for (const tier of tiers) {
+          // Maintain aspect ratio if downscaling
+          let targetWidth = tier.width;
+          let targetHeight = tier.height;
+          
+          if (targetWidth < sourceWidth || targetHeight < sourceHeight) {
+             const scale = Math.min(tier.width / sourceWidth, tier.height / sourceHeight);
+             targetWidth = Math.round(sourceWidth * scale) & ~1; // Ensure even dimensions
+             targetHeight = Math.round(sourceHeight * scale) & ~1;
+          }
+
+          const config: VideoEncoderConfig = {
+            codec: tier.codec,
+            width: targetWidth,
+            height: targetHeight,
+            bitrate: tier.bitrate,
+            framerate: MAX_OUTPUT_FPS,
+          };
+
+          if (await checkSupport(config)) {
+            selectedConfig = { ...tier, width: targetWidth, height: targetHeight };
+            break;
+          }
+        }
+
+        updateProgress('processing', `Encoder selected: ${selectedConfig.label} (${selectedConfig.width}x${selectedConfig.height})`, 22);
 
         const videoSource = new VideoSampleSource(
-          createAvcEncodingConfig(resolvedBitrate)
+          createAvcEncodingConfig(
+            selectedConfig.bitrate,
+            selectedConfig.width,
+            selectedConfig.height,
+            selectedConfig.codec
+          )
         );
 
         const bufferTarget = new BufferTarget();
