@@ -98,6 +98,8 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
       easingFunction: EasingFunction | string = DEFAULT_EASING,
       bitrate: number = DEFAULT_BITRATE
     ): Promise<Blob | null> => {
+      let input: Input | null = null;
+
       try {
         // Reset progress
         const initialProgress: SpeedCurveProgress = {
@@ -131,7 +133,7 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         // Step 1: Create input from blob
         const blobSource = new BlobSource(videoBlob);
-        const input = new Input({
+        input = new Input({
           source: blobSource,
           formats: ALL_FORMATS,
         });
@@ -554,6 +556,14 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         onProgress?.(errorProgress);
 
         return null;
+      } finally {
+        if (input) {
+          try {
+            input.dispose();
+          } catch (e) {
+            console.warn('Failed to dispose input:', e);
+          }
+        }
       }
     },
     []
