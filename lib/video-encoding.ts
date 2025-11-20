@@ -15,7 +15,8 @@ export const createAvcEncodingConfig = (
   bitrate: number,
   width?: number,
   height?: number,
-  codecString: string = AVC_LEVEL_4_0
+  codecString: string = AVC_LEVEL_4_0,
+  framerate?: number
 ): VideoEncodingConfig => ({
   codec: 'avc',
   bitrate,
@@ -28,7 +29,9 @@ export const createAvcEncodingConfig = (
     if (!config.latencyMode) {
       config.latencyMode = 'quality';
     }
-    if (!config.framerate) {
+    if (framerate && framerate > 0) {
+      config.framerate = framerate;
+    } else if (!config.framerate) {
       config.framerate = MAX_OUTPUT_FPS;
     }
     config.bitrate = bitrate;

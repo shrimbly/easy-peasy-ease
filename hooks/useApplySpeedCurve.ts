@@ -11,6 +11,7 @@ import {
   ALL_FORMATS,
   BufferTarget,
   Mp4OutputFormat,
+  canEncodeVideo,
 } from 'mediabunny';
 import type { Rotation } from 'mediabunny';
 import {
@@ -219,20 +220,25 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         // Determine best supported resolution/bitrate
         const sourceWidth = dimensions.width;
         const sourceHeight = dimensions.height;
+        const sourceFrameRate =
+          typeof metadata.frameRate === 'number' && Number.isFinite(metadata.frameRate)
+            ? metadata.frameRate
+            : TARGET_FRAME_RATE;
+        const targetFramerate = Math.min(
+          MAX_OUTPUT_FPS,
+          Math.max(15, Math.round(sourceFrameRate))
+        );
 
-        // Helper to check support
-        const checkSupport = async (config: VideoEncoderConfig) => {
-          try {
-            const support = await VideoEncoder.isConfigSupported(config);
-            return support.supported;
-          } catch (e) {
-            console.warn('Encoder support check failed', e);
-            return false;
-          }
+        type VideoTier = {
+          width: number;
+          height: number;
+          bitrate: number;
+          codec: string;
+          label: string;
         };
 
         // Define fallback tiers
-        const tiers = [
+        const tiers: VideoTier[] = [
           // Tier 1: Original Resolution (if 4K or high bitrate)
           {
             width: sourceWidth,
@@ -259,7 +265,9 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
           }
         ];
 
-        let selectedConfig = tiers[tiers.length - 1]; // Default to lowest
+        let selectedConfig:
+          | (VideoTier & { width: number; height: number; framerate: number })
+          | null = null;
 
         for (const tier of tiers) {
           // Maintain aspect ratio if downscaling
@@ -272,28 +280,43 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
             targetHeight = Math.round(sourceHeight * scale) & ~1;
           }
 
-          const config: VideoEncoderConfig = {
-            codec: tier.codec,
+          const supported = await canEncodeVideo('avc', {
             width: targetWidth,
             height: targetHeight,
             bitrate: tier.bitrate,
-            framerate: MAX_OUTPUT_FPS,
-          };
+            fullCodecString: tier.codec,
+          });
 
-          if (await checkSupport(config)) {
-            selectedConfig = { ...tier, width: targetWidth, height: targetHeight };
+          if (supported) {
+            selectedConfig = {
+              ...tier,
+              width: targetWidth,
+              height: targetHeight,
+              framerate: targetFramerate,
+            };
             break;
           }
         }
 
-        updateProgress('processing', `Encoder selected: ${selectedConfig.label} (${selectedConfig.width}x${selectedConfig.height})`, 22);
+        if (!selectedConfig) {
+          throw new Error(
+            'Device encoder does not support the required H.264 profiles for this video. Try reducing resolution/bitrate and retry.'
+          );
+        }
+
+        updateProgress(
+          'processing',
+          `Encoder selected: ${selectedConfig.label} (${selectedConfig.width}x${selectedConfig.height} @ ${selectedConfig.framerate}fps)`,
+          22
+        );
 
         const videoSource = new VideoSampleSource(
           createAvcEncodingConfig(
             selectedConfig.bitrate,
             selectedConfig.width,
             selectedConfig.height,
-            selectedConfig.codec
+            selectedConfig.codec,
+            selectedConfig.framerate
           )
         );
 
@@ -312,37 +335,8 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         // Step 4: Process each sample with speed curve
         let processedSamples = 0;
         const processingDuration = effectiveInputDuration;
-        let pendingSample: VideoSample | null = null;
-        let pendingTimestamp = 0;
-        let pendingDuration = 0;
         let timelineOffset: number | null = null;
         let lastOutputTimestamp = 0;
-
-        const flushPendingSample = async (force = false) => {
-          if (!pendingSample) {
-            return;
-          }
-          if (!force && pendingDuration < MIN_OUTPUT_FRAME_DURATION) {
-            return;
-          }
-          if (timelineOffset === null) {
-            timelineOffset = pendingTimestamp;
-          }
-          const normalizedTimestamp = pendingTimestamp - timelineOffset;
-          const safeTimestamp = Math.max(normalizedTimestamp, lastOutputTimestamp);
-          const remainingDuration = Math.max(0, outputDuration - safeTimestamp);
-          const desiredDuration = Math.max(MIN_SAMPLE_DURATION, pendingDuration);
-          const safeDuration = force
-            ? Math.max(MIN_SAMPLE_DURATION, remainingDuration)
-            : Math.min(desiredDuration, Math.max(MIN_SAMPLE_DURATION, remainingDuration));
-          pendingSample.setTimestamp(safeTimestamp);
-          pendingSample.setDuration(safeDuration);
-          await videoSource.add(pendingSample);
-          pendingSample.close();
-          pendingSample = null;
-          pendingDuration = 0;
-          lastOutputTimestamp = safeTimestamp + safeDuration;
-        };
 
         for await (const sample of sink.samples(0, processingDuration)) {
           const originalT = sample.timestamp ?? 0;
@@ -360,16 +354,28 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
           const normalizedDuration = Math.max(MIN_SAMPLE_DURATION, newDur);
 
-          if (!pendingSample) {
-            pendingSample = sample.clone();
-            pendingTimestamp = newT;
-            pendingDuration = normalizedDuration;
-          } else {
-            pendingDuration += normalizedDuration;
+          if (timelineOffset === null) {
+            timelineOffset = newT;
           }
+          const normalizedTimestamp = newT - timelineOffset;
+          const safeTimestamp = Math.max(normalizedTimestamp, lastOutputTimestamp);
+          const remainingDuration = Math.max(0, outputDuration - safeTimestamp);
+          if (remainingDuration <= 0) {
+            sample.close();
+            break;
+          }
+          const safeDuration = Math.max(
+            MIN_SAMPLE_DURATION,
+            Math.min(normalizedDuration, remainingDuration)
+          );
 
+          const outputSample = sample.clone();
+          outputSample.setTimestamp(safeTimestamp);
+          outputSample.setDuration(safeDuration);
+          await videoSource.add(outputSample);
+          outputSample.close();
           sample.close();
-          await flushPendingSample();
+          lastOutputTimestamp = safeTimestamp + safeDuration;
 
           processedSamples++;
 
@@ -382,8 +388,6 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
             );
           }
         }
-
-        await flushPendingSample(true);
 
         updateProgress('processing', 'Finalizing output...', 95);
 
