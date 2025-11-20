@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Upload, Play, PlayCircle, GripVertical, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { LightRays } from '@/components/ui/light-rays';
 import { BlurFade } from '@/components/ui/blur-fade';
 import { FinalVideoEditor } from '@/components/FinalVideoEditor';
@@ -33,6 +33,14 @@ type VideoMetadata = {
 
 const FOUR_K_WIDTH = 3840;
 const FOUR_K_HEIGHT = 2160;
+const MAX_TOTAL_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5GB
+
+interface PreflightWarning {
+  id: string;
+  title: string;
+  description: string;
+  severity: 'warning' | 'error';
+}
 
 const readVideoMetadata = (file: File | Blob): Promise<VideoMetadata> =>
   new Promise((resolve, reject) => {
@@ -182,7 +190,8 @@ export default function Home() {
   const [finalizationMessage, setFinalizationMessage] = useState('');
   const [isDropZoneHovered, setIsDropZoneHovered] = useState(false);
   const [isSupported, setIsSupported] = useState(true);
-  const [isCheckingSupport, setIsCheckingSupport] = useState(true);
+  const [preflightWarnings, setPreflightWarnings] = useState<PreflightWarning[]>([]);
+  const [showPreflightDialog, setShowPreflightDialog] = useState(false);
   const transitionVideosRef = useRef<TransitionVideo[]>([]);
 
   useEffect(() => {
@@ -197,8 +206,6 @@ export default function Home() {
       } catch (e) {
         console.warn("WebCodecs support check failed:", e);
         setIsSupported(false);
-      } finally {
-        setIsCheckingSupport(false);
       }
     };
     checkSupport();
@@ -245,12 +252,12 @@ export default function Home() {
             return prev.map((v) =>
               v.id === segmentId
                 ? {
-                    ...v,
-                    encodeCapability: {
-                      status: 'checking',
-                      message: 'Checking device encoder support…',
-                    },
-                  }
+                  ...v,
+                  encodeCapability: {
+                    status: 'checking',
+                    message: 'Checking device encoder support…',
+                  },
+                }
                 : v
             );
           });
@@ -273,18 +280,18 @@ export default function Home() {
               return prev.map((v) =>
                 v.id === segmentId
                   ? {
-                      ...v,
-                      width: metadata.width,
-                      height: metadata.height,
-                      encodeCapability: {
-                        status: supported ? 'supported' : 'unsupported',
-                        message: supported
-                          ? `Device can encode ${metadata.width}x${metadata.height} AVC`
-                          : `Device encoder cannot output ${metadata.width}x${metadata.height}`,
-                        codecString,
-                        bitrate,
-                      },
-                    }
+                    ...v,
+                    width: metadata.width,
+                    height: metadata.height,
+                    encodeCapability: {
+                      status: supported ? 'supported' : 'unsupported',
+                      message: supported
+                        ? `Device can encode ${metadata.width}x${metadata.height} AVC`
+                        : `Device encoder cannot output ${metadata.width}x${metadata.height}`,
+                      codecString,
+                      bitrate,
+                    },
+                  }
                   : v
               );
             });
@@ -298,12 +305,12 @@ export default function Home() {
               return prev.map((v) =>
                 v.id === segmentId
                   ? {
-                      ...v,
-                      encodeCapability: {
-                        status: 'error',
-                        message: errorMessage,
-                      },
-                    }
+                    ...v,
+                    encodeCapability: {
+                      status: 'error',
+                      message: errorMessage,
+                    },
+                  }
                   : v
               );
             });
@@ -481,19 +488,96 @@ export default function Home() {
   };
 
   const handleReapplyFinalVideo = async (options?: AudioFinalizeOptions) => {
-    await handleFinalizeVideo(undefined, options);
+    await handleFinalizeVideo(undefined, options, true);
+  };
+
+  const runPreflightChecks = (segments: TransitionVideo[]): PreflightWarning[] => {
+    const warnings: PreflightWarning[] = [];
+
+    // 1. Check for mixed orientation
+    let hasPortrait = false;
+    let hasLandscape = false;
+    segments.forEach((s) => {
+      if (s.width && s.height) {
+        if (s.height > s.width) hasPortrait = true;
+        else hasLandscape = true;
+      }
+    });
+
+    if (hasPortrait && hasLandscape) {
+      warnings.push({
+        id: 'orientation-mismatch',
+        title: 'Mixed Video Orientations',
+        description: 'You have both portrait and landscape videos. The final output might look rotated or stretched.',
+        severity: 'warning',
+      });
+    }
+
+    // 2. Check for large resolution disparity
+    let minHeight = Infinity;
+    let maxHeight = 0;
+    segments.forEach((s) => {
+      if (s.height) {
+        minHeight = Math.min(minHeight, s.height);
+        maxHeight = Math.max(maxHeight, s.height);
+      }
+    });
+
+    if (maxHeight > 0 && minHeight < Infinity && maxHeight > minHeight * 2) {
+      warnings.push({
+        id: 'resolution-disparity',
+        title: 'Resolution Disparity',
+        description: `Some videos are much larger than others (Max: ${maxHeight}p, Min: ${minHeight}p). Smaller videos will be upscaled, which may look blurry.`,
+        severity: 'warning',
+      });
+    }
+
+    // 3. Check total file size
+    const totalSize = segments.reduce((acc, s) => acc + (s.file?.size || 0), 0);
+    if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+      warnings.push({
+        id: 'large-files',
+        title: 'Large Project Size',
+        description: `Total video size is ${(totalSize / (1024 * 1024 * 1024)).toFixed(1)}GB. This might crash the browser during processing.`,
+        severity: 'error', // High risk
+      });
+    }
+
+    // 4. Encoder support (re-using existing status)
+    const unsupportedVideos = segments.filter(s => s.encodeCapability?.status === 'unsupported');
+    if (unsupportedVideos.length > 0) {
+      warnings.push({
+        id: 'unsupported-encoder',
+        title: 'Unsupported Resolution',
+        description: `Your device cannot encode some video resolutions (e.g. ${unsupportedVideos[0].width}x${unsupportedVideos[0].height}). The process will likely fail.`,
+        severity: 'error',
+      });
+    }
+
+    return warnings;
   };
 
   const handleFinalizeVideo = async (
     segmentsOverride?: TransitionVideo[],
-    options?: AudioFinalizeOptions
+    options?: AudioFinalizeOptions,
+    skipPreflight: boolean = false
   ) => {
+    const baseSegments = segmentsOverride ?? transitionVideos;
+
+    if (!skipPreflight) {
+      const warnings = runPreflightChecks(baseSegments);
+      if (warnings.length > 0) {
+        setPreflightWarnings(warnings);
+        setShowPreflightDialog(true);
+        return;
+      }
+    }
+
     try {
       setIsFinalizingVideo(true);
       setFinalizationProgress(0);
       setFinalizationMessage('Initializing...');
 
-      const baseSegments = segmentsOverride ?? transitionVideos;
       const segmentsToFinalize = syncSegmentsToLoopCount(baseSegments, loopCount);
 
       const finalBlob = await finalizeVideos(
@@ -502,7 +586,7 @@ export default function Home() {
           setFinalizationProgress(progress.progress);
           setFinalizationMessage(progress.message);
         },
-        1.5,
+        undefined, // Let the hook determine duration from metadata/content
         options?.audioBlob,
         options?.audioSettings
       );
@@ -557,16 +641,6 @@ export default function Home() {
       updated.splice(toIndex, 0, moved);
       return updated;
     });
-  };
-
-  const moveVideoUp = (index: number) => {
-    if (index === 0) return;
-    reorderTransitionVideos(index, index - 1);
-  };
-
-  const moveVideoDown = (index: number) => {
-    if (index === transitionVideos.length - 1) return;
-    reorderTransitionVideos(index, index + 1);
   };
 
   const handleVideoDragStart = (index: number) => (event: React.DragEvent<HTMLButtonElement>) => {
@@ -683,6 +757,48 @@ export default function Home() {
               loopCount={loopCount}
               onLoopCountChange={handleLoopCountChange}
             />
+
+            <Dialog open={showPreflightDialog} onOpenChange={setShowPreflightDialog}>
+              <DialogContent className="sm:max-w-[425px]">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+                    <AlertTriangle className="h-5 w-5" />
+                    Review Issues
+                  </DialogTitle>
+                  <DialogDescription>
+                    We found some potential issues with your videos.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="max-h-[60vh] overflow-y-auto py-4 space-y-4">
+                  {preflightWarnings.map((warning) => (
+                    <div key={warning.id} className={cn("rounded-md border p-3 text-sm",
+                      warning.severity === 'error' ? "bg-destructive/10 border-destructive/20" : "bg-amber-500/10 border-amber-500/20"
+                    )}>
+                      <h5 className={cn("font-semibold mb-1",
+                        warning.severity === 'error' ? "text-destructive" : "text-amber-700 dark:text-amber-400"
+                      )}>
+                        {warning.title}
+                      </h5>
+                      <p className="text-muted-foreground">{warning.description}</p>
+                    </div>
+                  ))}
+                </div>
+                <DialogFooter className="gap-2 sm:gap-0">
+                  <Button variant="outline" onClick={() => setShowPreflightDialog(false)}>
+                    Back to Edit
+                  </Button>
+                  <Button
+                    variant={preflightWarnings.some(w => w.severity === 'error') ? "destructive" : "default"}
+                    onClick={() => {
+                      setShowPreflightDialog(false);
+                      void handleFinalizeVideo(undefined, undefined, true);
+                    }}
+                  >
+                    Proceed Anyway
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             <Dialog open={isFinalizingVideo}>
               <DialogContent className="max-w-sm">
@@ -841,10 +957,7 @@ export default function Home() {
                             encodeStatusClass = 'text-muted-foreground';
                             break;
                           case 'supported':
-                            encodeStatusText =
-                              encodeCapability.message ??
-                              `Ready for ${formatResolutionLabel(video.width, video.height)}`;
-                            encodeStatusClass = 'text-emerald-500';
+                            encodeStatusText = null;
                             break;
                           case 'unsupported':
                             encodeStatusText =
@@ -873,32 +986,11 @@ export default function Home() {
                             onDragOver={handleVideoDragOver(index)}
                             onDrop={handleVideoDrop(index)}
                           >
-                            <div className="flex flex-col gap-1 mr-1 md:hidden">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                disabled={index === 0}
-                                onClick={() => moveVideoUp(index)}
-                              >
-                                <ChevronUp className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                disabled={index === transitionVideos.length - 1}
-                                onClick={() => moveVideoDown(index)}
-                              >
-                                <ChevronDown className="h-4 w-4" />
-                              </Button>
-                            </div>
+
 
                             <button
                               type="button"
-                              className="hidden md:flex h-8 w-8 items-center justify-center rounded-md border border-dashed border-border/70 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary cursor-grab"
+                              className="flex h-8 w-8 items-center justify-center rounded-md border border-dashed border-border/70 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary cursor-grab"
                               draggable
                               onDragStart={handleVideoDragStart(index)}
                               onDragEnd={handleVideoDragEnd}

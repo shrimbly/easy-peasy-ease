@@ -53,6 +53,7 @@ docs/qwen-docs.md
 docs/kling-docs.md
 docs/mediabunny.md
 docs/seedream-lite.md
+fix-attempts.md
 
 #cloudflared
 cloudflared-config.yml
