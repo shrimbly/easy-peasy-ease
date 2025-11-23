@@ -16,7 +16,7 @@ import {
 } from 'mediabunny';
 import type { Rotation } from 'mediabunny';
 import { DEFAULT_BITRATE } from '@/lib/speed-curve-config';
-import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
+import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_4_2, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 
 const FALLBACK_WIDTH = 1920;
 const FALLBACK_HEIGHT = 1080;
@@ -189,8 +189,9 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
         } = await determineEncodeParameters(videoBlobs);
         const safeWidth = probedWidth > 0 ? probedWidth : FALLBACK_WIDTH;
         const safeHeight = probedHeight > 0 ? probedHeight : FALLBACK_HEIGHT;
+        // Use Level 4.2 (Constrained Baseline) for high res to avoid mobile compatibility issues with High profile
         const codecProfile =
-          safeWidth * safeHeight > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
+          safeWidth * safeHeight > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_4_2 : AVC_LEVEL_4_0;
         const resolvedBitrate = Math.max(bitrate, DEFAULT_BITRATE);
 
         const supportsConfig = await canEncodeVideo('avc', {
@@ -299,14 +300,18 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
             // Read and write samples from this video
             let samplesFromThisVideo = 0;
             for await (const sample of sink.samples(0, videoDuration)) {
-              const originalTimestamp = sample.timestamp ?? 0;
+              try {
+                const originalTimestamp = sample.timestamp ?? 0;
 
-              // Adjust timestamps to fit after previous videos
-              const adjustedTimestamp = currentOutputTime + originalTimestamp;
-              sample.setTimestamp(adjustedTimestamp);
+                // Adjust timestamps to fit after previous videos
+                const adjustedTimestamp = currentOutputTime + originalTimestamp;
+                sample.setTimestamp(adjustedTimestamp);
 
-              await videoSource.add(sample);
-              sample.close();
+                await videoSource.add(sample);
+              } finally {
+                // Ensure sample is always closed, even if add() fails
+                sample.close();
+              }
 
               samplesFromThisVideo++;
 

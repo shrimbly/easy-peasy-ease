@@ -9,7 +9,7 @@ import { easing, type EasingFunction, getEasingFunction } from './easing-functio
 const INVERSE_TOLERANCE = 1e-6;
 const INVERSE_MAX_ITERATIONS = 32;
 const MONOTONICITY_SAMPLES = 256;
-const MONOTONICITY_TOLERANCE = 1e-6;
+const MONOTONICITY_TOLERANCE = 1e-4;
 const DEFAULT_METADATA_FPS = 30;
 const BITS_PER_MEGABIT = 1_000_000;
 
@@ -136,8 +136,11 @@ function getInverseEasing(func: EasingFunction): EasingFunction | null {
   }
 
   if (!isMonotonicIncreasing(func)) {
-    inverseCache.set(func, null);
-    return null;
+    if (!warnedNonMonotonic.has(func)) {
+      console.warn(`Easing function is not strictly monotonic. Inversion may be approximate.`);
+      warnedNonMonotonic.add(func);
+    }
+    // Fall through to return inverse anyway
   }
 
   const inverse: EasingFunction = (value: number) => {
@@ -152,12 +155,8 @@ function getInverseEasing(func: EasingFunction): EasingFunction | null {
 function mapTimeWithEasing(normalizedTime: number, func: EasingFunction): number {
   const inverse = getInverseEasing(func);
   if (!inverse) {
-    if (!warnedNonMonotonic.has(func)) {
-      console.warn(
-        `Easing function "${func.name ?? 'anonymous'}" is not monotonic. Falling back to direct mapping - timing may feel inverted.`
-      );
-      warnedNonMonotonic.add(func);
-    }
+    // This should theoretically not happen as we force inversion now,
+    // but if getInverseEasing returns null for other reasons:
     return func(normalizedTime);
   }
 

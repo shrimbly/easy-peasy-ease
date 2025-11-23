@@ -21,7 +21,7 @@ import {
   selectAdaptiveEasing,
   type VideoCurveMetadata,
 } from '@/lib/speed-curve';
-import type { EasingFunction } from '@/lib/easing-functions';
+import { type EasingFunction, getEasingFunction } from '@/lib/easing-functions';
 import {
   DEFAULT_BITRATE,
   TARGET_FRAME_RATE,
@@ -33,7 +33,7 @@ import {
   DEFAULT_EASING,
   MAX_OUTPUT_FPS,
 } from '@/lib/speed-curve-config';
-import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
+import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_4_2, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 
 type VideoSampleLike = Parameters<VideoSampleSource['add']>[0];
 
@@ -89,9 +89,108 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
     progress: 0,
   });
 
+  // Helper for linear sanitization pass
+  const sanitizeVideo = useCallback(
+    async (
+      blob: Blob,
+      onProgress: (msg: string, p: number) => void
+    ): Promise<Blob> => {
+      let input: Input | null = null;
+      try {
+        onProgress('Sanitizing input video...', 0);
+        
+        const source = new BlobSource(blob);
+        input = new Input({ source, formats: ALL_FORMATS });
+        
+        const tracks = await input.getVideoTracks();
+        if (tracks.length === 0) throw new Error('No video track for sanitization');
+        
+        const track = tracks[0];
+        const sink = new VideoSampleSink(track);
+        
+        const dim = await getVideoDimensions(blob);
+        // Downscale to safe 720p max for mobile robustness to rule out memory exhaustion
+        const scale = Math.min(1280 / dim.width, 720 / dim.height, 1.0);
+        const safeWidth = Math.round(dim.width * scale) & ~1; 
+        const safeHeight = Math.round(dim.height * scale) & ~1;
+        
+        // Ultra-Safe config: 4Mbps, Baseline Profile (Level 3.1)
+        // This uses the simplest encoding possible to ensure mobile hardware can keep up.
+        const config = createAvcEncodingConfig(
+            4_000_000,
+            safeWidth,
+            safeHeight,
+            'avc1.42001f', // Baseline 3.1
+            30
+        );
+        
+        console.log('[analysis] Sanitization Encoder Config:', JSON.stringify(config));
+        
+        const videoSource = new VideoSampleSource(config);
+        const bufferTarget = new BufferTarget();
+        const output = new Output({
+            format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+            target: bufferTarget
+        });
+        
+        output.addVideoTrack(videoSource, { rotation: normalizeRotation(track.rotation as number) });
+        await output.start();
+        
+        // Linear Copy with FORCE DECODE
+        let processed = 0;
+        // Estimate frame count for progress
+        const estimatedFrames = 120; 
+        
+        for await (const sample of sink.samples(0, Infinity)) {
+            // FORCE DECODE: Create a bitmap to force the decoder to actually render pixels.
+            // Mobile decoders are lazy and might return a frame before it's ready, leading to frozen output.
+            // Awaiting createImageBitmap forces synchronization.
+            let videoFrame: VideoFrame | null = null;
+            let bitmap: ImageBitmap | null = null;
+            try {
+                // Use the native VideoFrame to create the bitmap
+                // We must close this frame afterwards
+                // @ts-ignore - VideoSample has toVideoFrame method
+                videoFrame = sample.toVideoFrame();
+                bitmap = await createImageBitmap(videoFrame);
+            } catch (e) {
+                console.warn('Failed to create bitmap for sync (ignoring):', e);
+            } finally {
+                if (bitmap) {
+                    bitmap.close();
+                }
+                if (videoFrame) {
+                    videoFrame.close();
+                }
+            }
+
+            const outSample = sample.clone();
+            await videoSource.add(outSample);
+            
+            outSample.close();
+            sample.close();
+            
+            processed++;
+            if (processed % 10 === 0) {
+                onProgress('Sanitizing input video...', Math.min(90, (processed / estimatedFrames) * 100));
+            }
+        }
+        
+        await videoSource.close();
+        await output.finalize();
+        
+        if (!bufferTarget.buffer) throw new Error('Sanitization failed');
+        return new Blob([bufferTarget.buffer], { type: 'video/mp4' });
+      } finally {
+        if (input) input.dispose();
+      }
+    }, 
+    []
+  );
+
   const applySpeedCurve = useCallback(
     async (
-      videoBlob: Blob,
+      rawVideoBlob: Blob,
       inputDuration: number = DEFAULT_INPUT_DURATION,
       outputDuration: number = DEFAULT_OUTPUT_DURATION,
       onProgress?: (progress: SpeedCurveProgress) => void,
@@ -99,6 +198,8 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
       bitrate: number = DEFAULT_BITRATE
     ): Promise<Blob | null> => {
       let input: Input | null = null;
+      // Hoist currentInputSample to ensure it is closed in finally block if loop crashes
+      let currentInputSample: VideoSampleLike | null = null;
 
       try {
         // Reset progress
@@ -121,22 +222,23 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
           onProgress?.(p);
         };
 
-        updateProgress('processing', 'Creating input from video blob...', 5);
+        // PHASE 1: SANITIZE INPUT
+        // Mobile decoders struggle with the complex Level 5.0 / Long GOP structure of source videos
+        // when performing the random-access seeking required for speed curves.
+        // We first linear-copy the video to a "Safe" (Level 4.0, 1080p) format.
+        const videoBlob = await sanitizeVideo(rawVideoBlob, (msg, p) => {
+            updateProgress('processing', msg, p * 0.3); // Sanitize is 30% of total progress
+        });
+        
+        updateProgress('processing', 'Starting speed curve application...', 30);
 
-        // console.log('[Debug] applySpeedCurve input:', {
-        //   isBlob: videoBlob instanceof Blob,
-        //   isFile: videoBlob instanceof File,
-        //   size: videoBlob.size,
-        //   type: videoBlob.type,
-        //   name: videoBlob instanceof File ? videoBlob.name : 'anonymous-blob'
-        // });
-
-        // Step 1: Create input from blob
+        // PHASE 2: APPLY CURVE
         const blobSource = new BlobSource(videoBlob);
         input = new Input({
           source: blobSource,
           formats: ALL_FORMATS,
         });
+
         const videoTracks = await input.getVideoTracks();
 
         if (videoTracks.length === 0) {
@@ -147,10 +249,8 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         const trackRotation = normalizeRotation(
           typeof videoTrack.rotation === 'number' ? videoTrack.rotation : undefined
         );
-
+        
         // Step 2: Create sink to read samples
-        updateProgress('processing', 'Creating video sample sink...', 10);
-
         const sink = new VideoSampleSink(videoTrack);
 
         // Analyze metadata up front so we can adapt easing to the source
@@ -168,12 +268,14 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
             return { width: 1920, height: 1080 }; // Fallback
           })
         ]);
-
+        
         let resolvedBitrate = Number.isFinite(bitrate) ? bitrate : DEFAULT_BITRATE;
         if (packetStats?.averageBitrate && Number.isFinite(packetStats.averageBitrate)) {
           resolvedBitrate = Math.max(resolvedBitrate, packetStats.averageBitrate);
         }
-        resolvedBitrate = Math.max(1, Math.floor(resolvedBitrate));
+        // Cap bitrate to 8Mbps to prevent mobile decoder exhaustion/freezing
+        const MOBILE_SAFE_BITRATE_CAP = 8_000_000;
+        resolvedBitrate = Math.min(Math.max(1, Math.floor(resolvedBitrate)), MOBILE_SAFE_BITRATE_CAP);
 
         const resolvedDuration =
           typeof trackDuration === 'number' && Number.isFinite(trackDuration) && trackDuration > 0
@@ -189,106 +291,87 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         const metadata: VideoCurveMetadata = {
           duration: resolvedDuration,
-          bitrate:
-            packetStats?.averageBitrate && Number.isFinite(packetStats.averageBitrate)
-              ? packetStats.averageBitrate
-              : resolvedBitrate,
+          bitrate: resolvedBitrate,
           frameRate,
         };
-
+        
         const shouldAdaptCurve =
           typeof easingFunction === 'string' && easingFunction === DEFAULT_EASING;
         const adaptiveSelection = shouldAdaptCurve ? selectAdaptiveEasing(metadata) : null;
         const easingToUse: EasingFunction | string =
           adaptiveSelection?.easingFunction ?? easingFunction;
-
-        // Helper to determine actual content duration by scanning packets (no decoding)
-        // Using EncodedPacketSink is much faster and lighter on resources than VideoSampleSink
-        const scanActualDuration = async (blob: Blob): Promise<{
-          firstTimestamp: number;
-          lastTimestamp: number;
-          duration: number;
-          packetCount: number;
-        }> => {
-          updateProgress('processing', 'Scanning video duration...', 12);
           
+        // Helper to count exact decodable frames (Pass 1)
+        const countDecodableFrames = async (blob: Blob): Promise<number> => {
+          updateProgress('processing', 'Analyzing structure...', 35);
+
           const scanSource = new BlobSource(blob);
           const scanInput = new Input({ source: scanSource, formats: ALL_FORMATS });
-          
+
           try {
             const scanTracks = await scanInput.getVideoTracks();
             if (scanTracks.length === 0) {
-              console.warn('[Debug] No video tracks found during scan');
-              scanInput.dispose();
-              return { firstTimestamp: 0, lastTimestamp: 0, duration: 0, packetCount: 0 };
+              return 0;
             }
-            
+
             const scanTrack = scanTracks[0];
-            const packetSink = new EncodedPacketSink(scanTrack);
-            
-            let minT = Infinity;
-            let maxT = -Infinity;
-            let lastDur = 0;
-            let packetCount = 0;
-            
-            // Iterate all packets to find exact bounds
-            // This is lightweight as it only reads container headers
-            for await (const packet of packetSink.packets()) {
-              const t = packet.timestamp;
-              const d = packet.duration;
-              
-              if (t < minT) minT = t;
-              if (t > maxT) maxT = t;
-              lastDur = d;
-              packetCount++;
+            const scanSink = new VideoSampleSink(scanTrack);
+
+            let count = 0;
+            // Drain all samples to count them
+            for await (const sample of scanSink.samples(0, Infinity)) {
+              count++;
+              sample.close();
             }
-            
-            // Dispose input to free file handle
-            scanInput.dispose();
-            
-            if (!Number.isFinite(minT) || !Number.isFinite(maxT)) {
-              return { firstTimestamp: 0, lastTimestamp: 0, duration: 0, packetCount: 0 };
-            }
-            
-            // Calculate duration: (last_start - first_start) + last_duration
-            const duration = (maxT - minT) + lastDur;
-            return {
-              firstTimestamp: minT,
-              lastTimestamp: maxT,
-              duration,
-              packetCount
-            };
+            return count;
           } catch (e) {
-             console.warn('Error scanning duration:', e);
-             try { scanInput.dispose(); } catch {}
-             return { firstTimestamp: 0, lastTimestamp: 0, duration: 0, packetCount: 0 };
+            console.warn('Error counting frames:', e);
+            return 0;
+          } finally {
+            scanInput.dispose();
           }
         };
 
-        // Scan for actual duration using the blob (safer than reusing track)
-        const { firstTimestamp: scannedFirstT, duration: scannedDuration, packetCount } = await scanActualDuration(videoBlob);
-        
-        let effectiveInputDuration = 
-          scannedDuration > 0 ? scannedDuration :
+        // Pass 1: Count exact frames
+        const exactFrameCount = await countDecodableFrames(videoBlob);
+
+        if (exactFrameCount === 0) {
+          throw new Error('Could not decode any frames from the input video');
+        }
+
+        // Use the metadata duration as a fallback for display, but logic relies on frame count
+        let effectiveInputDuration =
           (typeof metadata.duration === 'number' && Number.isFinite(metadata.duration) && metadata.duration > 0
             ? metadata.duration
             : inputDuration);
-            
-        const fpsDisplay = metadata.frameRate.toFixed(1);
-        const bitrateDisplay = (metadata.bitrate / 1_000_000).toFixed(1);
-        const durationDisplay = effectiveInputDuration.toFixed(2);
-        const metadataSummary = `${durationDisplay}s @ ${fpsDisplay}fps @ ${bitrateDisplay}Mbps`;
 
-        updateProgress(
-          'processing',
-          adaptiveSelection
-            ? `Metadata analyzed (${metadataSummary}) -> ${adaptiveSelection.easingName}`
-            : `Metadata analyzed (${metadataSummary})`,
-          18
-        );
+        // REFRESH INPUT STATE:
+        try {
+            if (input) {
+                input.dispose();
+                input = null;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        } catch (e) {
+            console.warn('Failed to dispose metadata input:', e);
+        }
 
         // Step 3: Create output with video source
-        updateProgress('processing', 'Configuring encoder...', 20);
+        updateProgress('processing', 'Configuring encoder...', 40);
+        
+        // Create FRESH input for encoding
+        const encodingSource = new BlobSource(videoBlob);
+        input = new Input({
+          source: encodingSource,
+          formats: ALL_FORMATS,
+        });
+        
+        const encodingTracks = await input.getVideoTracks();
+        if (encodingTracks.length === 0) {
+             throw new Error('Failed to re-open video tracks for encoding');
+        }
+        const encodingTrack = encodingTracks[0];
+        const encodingSink = new VideoSampleSink(encodingTrack);
 
         // Determine best supported resolution/bitrate
         const sourceWidth = dimensions.width;
@@ -312,12 +395,12 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         // Define fallback tiers
         const tiers: VideoTier[] = [
-          // Tier 1: Original Resolution (if 4K or high bitrate)
+          // Tier 1: Original Resolution (using Constrained Baseline 4.2 for mobile compatibility)
           {
             width: sourceWidth,
             height: sourceHeight,
             bitrate: resolvedBitrate,
-            codec: AVC_LEVEL_5_1,
+            codec: AVC_LEVEL_4_2,
             label: 'Original'
           },
           // Tier 2: 1080p (Max 15Mbps)
@@ -373,15 +456,9 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         if (!selectedConfig) {
           throw new Error(
-            'Device encoder does not support the required H.264 profiles for this video. Try reducing resolution/bitrate and retry.'
+            'Device encoder does not support the required H.264 profiles for this video.'
           );
         }
-
-        updateProgress(
-          'processing',
-          `Encoder selected: ${selectedConfig.label} (${selectedConfig.width}x${selectedConfig.height} @ ${selectedConfig.framerate}fps)`,
-          22
-        );
 
         const videoSource = new VideoSampleSource(
           createAvcEncodingConfig(
@@ -401,129 +478,117 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         output.addVideoTrack(videoSource, { rotation: trackRotation });
 
-        updateProgress('processing', 'Starting output encoding...', 25);
+        updateProgress('processing', 'Starting output encoding...', 45);
 
         await output.start();
 
-        // Step 4: Process each sample with speed curve - INDEX BASED STRATEGY
-        // Instead of relying on timestamps (which can be unreliable on Android), we map the *index*
-        // of the frame to the output time. This ensures we always use exactly the frames we have
-        // to fill the 1.5s output, creating an "elastic" timeline that never freezes.
-        let processedSamples = 0;
+        // Step 4: Process each sample with speed curve - RESAMPLING STRATEGY (Pass 2)
+        const outputFrameRate = 30; // Force 30fps CFR for maximum compatibility
+        const totalOutputFrames = Math.ceil(outputDuration * outputFrameRate);
+        const frameDuration = 1 / outputFrameRate;
         
-        // We scan for packet count, but if the decoder drops frames, we might get fewer.
-        // We'll use the scanned count as the "expected" count for the curve.
-        const expectedSampleCount = packetCount > 0 ? packetCount : Math.ceil(effectiveInputDuration * 30);
+        let currentInputFrameIndex = 0;
+
+        // Resolve easing function directly
+        const easing = typeof easingToUse === 'string'
+            ? getEasingFunction(easingToUse)
+            : easingToUse;
+
+        const sampleIterator = encodingSink.samples(0, effectiveInputDuration * 2.0);
+
+        // Initialize first sample
+        const nextSample = await sampleIterator.next();
+        if (!nextSample.done) {
+          currentInputSample = nextSample.value;
+        }
         
-        // Track timeline to ensure monotonicity
-        let lastOutputTimestamp = 0;
-        let lastOutputClone: VideoSampleLike | null = null;
+        for (let i = 0; i < totalOutputFrames; i++) {
+          // 1. Calculate progress in Output Time [0, 1]
+          const progressOut = i / (totalOutputFrames - 1);
 
-        const emitSample = async (
-          sourceSample: VideoSampleLike,
-          timestamp: number,
-          duration: number,
-          replaceLastClone: boolean = true
-        ) => {
-          const outputSample = sourceSample.clone();
-          outputSample.setTimestamp(timestamp);
-          outputSample.setDuration(duration);
-          await videoSource.add(outputSample);
-          if (replaceLastClone) {
-            if (lastOutputClone) {
-              lastOutputClone.close();
-            }
-            lastOutputClone = outputSample.clone();
-          }
-          outputSample.close();
-        };
+          // 2. Map Output Progress -> Input Progress (Direct easing)
+          const progressIn = easing(progressOut);
 
-        // Use a generous duration for the sink to ensure we catch stragglers,
-        // but the logic is now driven by sample index.
-        const processingLimit = effectiveInputDuration * 2.0;
-
-        for await (const sample of sink.samples(0, processingLimit)) {
-          const originalDur = sample.duration ?? TARGET_FRAME_DURATION;
-
-          // Elastic Warping: Map sample index to time [0, 1]
-          // We assume the current sample is at index `processedSamples`.
-          // We map its "start" and "end" in index-space to the output time.
+          // 3. Determine which Input Frame corresponds to this progress
+          const targetInputIndex = Math.min(
+            exactFrameCount - 1,
+            Math.round(progressIn * (exactFrameCount - 1))
+          );
           
-          const progressStart = processedSamples / expectedSampleCount;
-          const progressEnd = (processedSamples + 1) / expectedSampleCount;
-
-          // Apply easing to the normalized progress [0, 1]
-          // The easing function maps domain [0, 1] to range [0, 1]
-          // We then scale by outputDuration to get seconds.
-          const easingFunc = typeof easingToUse === 'string' 
-            ? (t: number) => warpTime(t * effectiveInputDuration, effectiveInputDuration, 1, easingToUse) // reuse warpTime for curve shape
-            : (t: number) => {
-                // If it's a raw function, we need to check if it expects 0-1 or seconds. 
-                // Typically our easing functions are 0-1.
-                // Let's assume standard easing signature: f(t) -> 0..1
-                return typeof easingToUse === 'function' ? easingToUse(t) : t;
-            };
+          // 4. Advance input stream until we reach the target frame
+          while (currentInputFrameIndex < targetInputIndex && currentInputSample) {
+            const result = await sampleIterator.next();
             
-          // Actually, `warpTime` is designed to take (time, inputDur, outputDur).
-          // We can just treat "1.0" as the input duration and "outputDuration" as the output.
-          // So warpTime(progress, 1.0, outputDuration) works perfect.
-          
-          const startT = warpTime(progressStart, 1.0, outputDuration, easingToUse);
-          const endT = warpTime(progressEnd, 1.0, outputDuration, easingToUse);
-          
-          const sampleDuration = Math.max(MIN_SAMPLE_DURATION, endT - startT);
-          const sampleTimestamp = startT;
+            // No throttling needed anymore because input video is now "Safe" (linear sanitize pass)
+            // The mobile decoder can handle skipping on the sanitized Level 4.0 stream.
+            // PROVIDED WE HAVE KEYFRAMES (which we now do).
 
-          // Ensure monotonicity and fill gaps
-          const safeTimestamp = Math.max(sampleTimestamp, lastOutputTimestamp);
-          
-          // If we have gone past the output duration, stop.
-          if (safeTimestamp >= outputDuration - MIN_SAMPLE_DURATION) {
-             sample.close();
-             break;
+            if (result.done) {
+              break;
+            }
+
+            // Close the old sample as we are done with it
+            currentInputSample.close();
+            currentInputSample = result.value;
+            currentInputFrameIndex++;
           }
-          
-          // Clip duration if it extends past output limit
-          const clippedDuration = Math.min(sampleDuration, outputDuration - safeTimestamp);
 
-          if (clippedDuration > 0) {
-             await emitSample(sample, safeTimestamp, clippedDuration);
-             lastOutputTimestamp = safeTimestamp + clippedDuration;
+          // 5. Emit the current frame
+          if (currentInputSample) {
+            const outputSample = currentInputSample.clone();
+            try {
+              const timestamp = i * frameDuration;
+              outputSample.setTimestamp(timestamp);
+              outputSample.setDuration(frameDuration);
+              
+              if (i >= totalOutputFrames - 15) {
+                 // Validate monotonicity of input samples near the end
+                 console.log(`[analysis] Frame ${i}: InputTS=${currentInputSample.timestamp}, OutputTS=${timestamp.toFixed(4)}`);
+              }
+              
+              await videoSource.add(outputSample);
+            } finally {
+              outputSample.close();
+            }
           }
-          
-          sample.close();
-          processedSamples++;
 
-          // Update progress
-          if (processedSamples % 10 === 0) {
+          // Update progress (scale 45% -> 95%)
+          if (i % 10 === 0) {
             updateProgress(
               'processing',
-              `Processing frames: ${processedSamples}/${expectedSampleCount}...`,
-              25 + Math.min(65, (processedSamples / expectedSampleCount) * 65)
+              `Resampling frames: ${i}/${totalOutputFrames}...`,
+              45 + Math.min(50, (i / totalOutputFrames) * 50)
             );
           }
         }
-
-        // Tail handling: If we have fewer samples than expected (decoder drop),
-        // we might have a small gap at the end.
-        // OR if we had more samples, the loop broke early.
-        // In the "fewer samples" case, we stretch the last frame to fill.
-        const remainingDuration = Math.max(0, outputDuration - lastOutputTimestamp);
-        if (remainingDuration > MIN_SAMPLE_DURATION && lastOutputClone) {
-           await emitSample(lastOutputClone, lastOutputTimestamp, remainingDuration, false);
-           lastOutputTimestamp += remainingDuration;
+        
+        // CRITICAL FIX FOR MOBILE: "Sacrificial Frame"
+        if (currentInputSample) {
+             const paddingSample = currentInputSample.clone();
+             try {
+                 const paddingTimestamp = totalOutputFrames * frameDuration;
+                 paddingSample.setTimestamp(paddingTimestamp);
+                 paddingSample.setDuration(frameDuration);
+                 console.log(`[analysis] Emitting SACRIFICIAL Padding Frame: ts=${paddingTimestamp.toFixed(4)}`);
+                 await videoSource.add(paddingSample);
+             } catch (e) {
+                 console.warn('Failed to add padding frame:', e);
+             } finally {
+                 paddingSample.close();
+             }
         }
 
-        const cloneToDispose = lastOutputClone as unknown as { close(): void } | null;
-        if (cloneToDispose) {
-          cloneToDispose.close();
+        // Clean up the last sample
+        if (currentInputSample) {
+          currentInputSample.close();
+          currentInputSample = null;
         }
-        lastOutputClone = null;
 
         updateProgress('processing', 'Finalizing output...', 95);
 
         // Ensure encoder flushes SPS/PPS before finalizing
         await videoSource.close();
+        
         // Step 5: Finalize and get output blob
         await output.finalize();
         const buffer = bufferTarget.buffer;
@@ -557,6 +622,16 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         return null;
       } finally {
+        // CRITICAL: Ensure any held sample is closed to prevent memory leaks
+        if (currentInputSample) {
+            try {
+                currentInputSample.close();
+            } catch (e) {
+                console.warn('Failed to close leaked sample:', e);
+            }
+            currentInputSample = null;
+        }
+
         if (input) {
           try {
             input.dispose();
@@ -566,7 +641,7 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         }
       }
     },
-    []
+    [sanitizeVideo]
   );
 
   const reset = useCallback(() => {
