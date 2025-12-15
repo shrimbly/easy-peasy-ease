@@ -21,4 +21,4 @@ export const DEFAULT_KEYFRAME_INTERVAL = 1.0; // 1 second between keyframes - ba
 // Speed curve parameters
 export const DEFAULT_INPUT_DURATION = 5; // Kling videos are 5 seconds
 export const DEFAULT_OUTPUT_DURATION = 1.5; // Target 1.5s with ease curve
-export const DEFAULT_EASING = 'easeInExpoOutCubic'; // Default easing function
+export const DEFAULT_EASING = 'easeInOutSine'; // Default easing function

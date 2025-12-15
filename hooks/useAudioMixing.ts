@@ -82,8 +82,6 @@ export const useAudioMixing = (): UseAudioMixingReturn => {
 
         const sampleRate = decodedBuffers[0].sampleRate;
         const channels = decodedBuffers[0].numberOfChannels;
-        const availableSamples = decodedBuffers.reduce((sum, buffer) => sum + buffer.length, 0);
-        const availableDuration = availableSamples / sampleRate;
         const targetDuration = Math.max(
           MINIMUM_AUDIO_DURATION,
           videoDuration
@@ -96,18 +94,60 @@ export const useAudioMixing = (): UseAudioMixingReturn => {
           sampleRate,
         });
 
+        // Handle audio offset
+        const offsetSeconds = options?.offset ?? 0;
+        const offsetSamples = Math.floor(offsetSeconds * sampleRate);
+
+        // Calculate where to start writing audio and where to start reading from source
         let writeOffset = 0;
-        for (const buffer of decodedBuffers) {
-          const remainingSamples = totalSamples - writeOffset;
-          if (remainingSamples <= 0) {
-            break;
+        let sourceSkipSamples = 0;
+
+        if (offsetSamples > 0) {
+          // Positive offset: delay audio (start with silence)
+          // The buffer is already zero-initialized, so we just start writing later
+          writeOffset = Math.min(offsetSamples, totalSamples);
+        } else if (offsetSamples < 0) {
+          // Negative offset: trim beginning of audio (skip source samples)
+          sourceSkipSamples = Math.abs(offsetSamples);
+        }
+
+        // Skip samples from source if needed (negative offset)
+        let samplesToSkip = sourceSkipSamples;
+        let bufferIndex = 0;
+        let bufferOffset = 0;
+
+        while (samplesToSkip > 0 && bufferIndex < decodedBuffers.length) {
+          const buffer = decodedBuffers[bufferIndex];
+          const availableInBuffer = buffer.length - bufferOffset;
+          if (samplesToSkip >= availableInBuffer) {
+            samplesToSkip -= availableInBuffer;
+            bufferIndex++;
+            bufferOffset = 0;
+          } else {
+            bufferOffset = samplesToSkip;
+            samplesToSkip = 0;
           }
-          const writeLength = Math.min(buffer.length, remainingSamples);
+        }
+
+        // Write audio from the current position in decoded buffers
+        while (writeOffset < totalSamples && bufferIndex < decodedBuffers.length) {
+          const buffer = decodedBuffers[bufferIndex];
+          const remainingSamples = totalSamples - writeOffset;
+          const availableInBuffer = buffer.length - bufferOffset;
+          const writeLength = Math.min(availableInBuffer, remainingSamples);
+
           for (let channel = 0; channel < channels; channel++) {
-            const channelData = buffer.getChannelData(channel).subarray(0, writeLength);
+            const channelData = buffer.getChannelData(channel).subarray(bufferOffset, bufferOffset + writeLength);
             mergedBuffer.getChannelData(channel).set(channelData, writeOffset);
           }
+
           writeOffset += writeLength;
+          bufferOffset += writeLength;
+
+          if (bufferOffset >= buffer.length) {
+            bufferIndex++;
+            bufferOffset = 0;
+          }
         }
 
         // If we ran out of source samples before filling the target duration,

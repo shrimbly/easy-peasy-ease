@@ -1,7 +1,7 @@
 'use client';
 
 import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FinalVideo, TransitionVideo, AudioProcessingOptions } from '@/lib/types';
+import { FinalVideo, TransitionVideo, AudioProcessingOptions, UpdateReason } from '@/lib/types';
 import { Label } from '@/components/ui/label';
 import { CubicBezierEditor } from '@/components/CubicBezierEditor';
 import { Button } from '@/components/ui/button';
@@ -42,7 +42,7 @@ interface FinalVideoEditorProps {
   onBezierChange: (id: number, bezier: [number, number, number, number], applyAll?: boolean) => void;
   defaultBezier: [number, number, number, number];
   onCloneSegmentSettings: (id: number) => void;
-  onUpdateVideo: (options?: { audioBlob?: Blob; audioSettings?: AudioProcessingOptions }) => void;
+  onUpdateVideo: (options?: { audioBlob?: Blob; audioSettings?: AudioProcessingOptions; updateHint?: UpdateReason }) => void;
   isUpdating: boolean;
   onExit: () => void;
   onDownload: () => void;
@@ -80,9 +80,15 @@ function FinalVideoEditorComponent({
   const [audioSettings, setAudioSettings] = useState<AudioProcessingOptions>({
     fadeIn: 0.5,
     fadeOut: 0.5,
+    offset: 0,
   });
   const [updatePromptReason, setUpdatePromptReason] = useState<'loop' | 'audio' | null>(null);
   const [timelineZoom, setTimelineZoom] = useState(0);
+
+  // Refs for tracking what changed to determine update path
+  const prevAudioFileRef = useRef<File | null>(null);
+  const prevAudioSettingsRef = useRef<AudioProcessingOptions>({ fadeIn: 0.5, fadeOut: 0.5, offset: 0 });
+  const audioFileChangedRef = useRef(false);
   const [localCurve, setLocalCurve] = useState<[number, number, number, number] | null>(null);
   const bezierPendingRef = useRef<{
     segmentId: number;
@@ -208,6 +214,7 @@ function FinalVideoEditorComponent({
 
   const handleAudioSelect = useCallback((file: File) => {
     setAudioFile(file);
+    audioFileChangedRef.current = true;
     setUpdatePromptReason('audio');
   }, []);
 
@@ -222,6 +229,17 @@ function FinalVideoEditorComponent({
     if (!waveformData) return;
     setInspectorView('audio');
   }, [waveformData]);
+
+  const handleAudioOffsetChange = useCallback((newOffset: number) => {
+    setAudioSettings((prev) => ({
+      ...prev,
+      offset: newOffset,
+    }));
+  }, []);
+
+  const handleAudioOffsetCommit = useCallback(() => {
+    setUpdatePromptReason('audio');
+  }, []);
 
   const updateAudioSetting = (property: 'fadeIn' | 'fadeOut', value: number) => {
     const sanitizedValue = Number.isNaN(value) ? 0 : value;
@@ -242,9 +260,38 @@ function FinalVideoEditorComponent({
   );
 
   const handleVideoUpdate = () => {
+    // Determine update hint based on what changed
+    let updateHint: UpdateReason | undefined;
+
+    if (audioFileChangedRef.current) {
+      // Audio file was changed - use medium path
+      updateHint = 'audio-file';
+    } else if (
+      audioFile &&
+      prevAudioFileRef.current === audioFile &&
+      audioSettings.offset !== prevAudioSettingsRef.current.offset
+    ) {
+      // Offset changed - needs re-stitch (medium path)
+      updateHint = 'audio-file';
+    } else if (
+      audioFile &&
+      prevAudioFileRef.current === audioFile &&
+      (audioSettings.fadeIn !== prevAudioSettingsRef.current.fadeIn ||
+        audioSettings.fadeOut !== prevAudioSettingsRef.current.fadeOut)
+    ) {
+      // Only fade settings changed - use fast path
+      updateHint = 'audio-fade';
+    }
+
+    // Update refs for next comparison
+    prevAudioFileRef.current = audioFile;
+    prevAudioSettingsRef.current = { ...audioSettings };
+    audioFileChangedRef.current = false;
+
     onUpdateVideo({
       audioBlob: audioFile ?? undefined,
       audioSettings,
+      updateHint,
     });
     setUpdatePromptReason(null);
   };
@@ -536,6 +583,9 @@ function FinalVideoEditorComponent({
                       isSelected={inspectorView === 'audio'}
                       trackWidth={trackWidth}
                       pixelsPerSecond={pixelsPerSecond}
+                      offset={audioSettings.offset}
+                      onOffsetChange={handleAudioOffsetChange}
+                      onOffsetCommit={handleAudioOffsetCommit}
                     />
                   )}
                 </div>

@@ -44,6 +44,7 @@ export interface AudioTrack {
 export interface AudioProcessingOptions {
   fadeIn: number;
   fadeOut: number;
+  offset: number;  // Seconds. Positive = audio delayed, Negative = audio trimmed from start
 }
 
 export interface FinalVideo {
@@ -52,4 +53,43 @@ export interface FinalVideo {
   size: number; // File size in bytes
   createdAt: Date;
   audioTrack?: AudioTrack;
+}
+
+/**
+ * Cache for speed-curved video blobs to avoid re-processing
+ * when only audio settings change
+ */
+export interface SpeedCurvedBlobCache {
+  /** Map of segment ID to processed speed-curved blob */
+  blobs: Map<number, Blob>;
+  /** Hash of segment parameters used to generate these blobs (for cache invalidation) */
+  configHash: string;
+}
+
+/**
+ * Reason for video update - determines which processing path to take
+ */
+export type UpdateReason =
+  | 'full'           // First render or segment params changed - full re-render
+  | 'audio-file'     // New audio file uploaded - use cached blobs, re-stitch
+  | 'audio-fade'     // Only fade settings changed - remux audio only
+  | 'segment-change'; // Segment duration/easing changed - invalidate cache
+
+/**
+ * Context passed to finalization to determine which processing path to use
+ */
+export interface FinalizeContext {
+  reason: UpdateReason;
+  cachedBlobs?: SpeedCurvedBlobCache;
+  previousFinalVideo?: Blob;
+  audioBlob?: Blob;
+  audioSettings?: AudioProcessingOptions;
+}
+
+/**
+ * Result from finalization including the final video and cache for reuse
+ */
+export interface FinalizeResult {
+  finalBlob: Blob;
+  speedCurvedCache: SpeedCurvedBlobCache;
 }

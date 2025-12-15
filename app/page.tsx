@@ -9,7 +9,14 @@ import { LightRays } from '@/components/ui/light-rays';
 import { BlurFade } from '@/components/ui/blur-fade';
 import { FinalVideoEditor } from '@/components/FinalVideoEditor';
 import { useFinalizeVideo } from '@/hooks/useFinalizeVideo';
-import { TransitionVideo, FinalVideo, AudioProcessingOptions } from '@/lib/types';
+import {
+  TransitionVideo,
+  FinalVideo,
+  AudioProcessingOptions,
+  SpeedCurvedBlobCache,
+  UpdateReason,
+  FinalizeContext,
+} from '@/lib/types';
 import TextPressure from '@/components/text/text-pressure';
 import { canEncodeVideo, getEncodableVideoCodecs } from 'mediabunny';
 import {
@@ -23,6 +30,7 @@ import { AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 type AudioFinalizeOptions = {
   audioBlob?: Blob;
   audioSettings?: AudioProcessingOptions;
+  updateHint?: UpdateReason;
 };
 
 type VideoMetadata = {
@@ -194,6 +202,13 @@ export default function Home() {
   const [showPreflightDialog, setShowPreflightDialog] = useState(false);
   const transitionVideosRef = useRef<TransitionVideo[]>([]);
 
+  // Cache for speed-curved blobs to enable fast audio-only updates
+  const [speedCurveCache, setSpeedCurveCache] = useState<SpeedCurvedBlobCache | null>(null);
+
+  // Refs for tracking previous values to detect what changed
+  const prevAudioBlobRef = useRef<Blob | null>(null);
+  const prevAudioSettingsRef = useRef<AudioProcessingOptions | null>(null);
+
   useEffect(() => {
     const checkSupport = async () => {
       try {
@@ -364,6 +379,10 @@ export default function Home() {
         });
         setLoopCount(1);
         setSelectedSegmentId(preparedSegments[0]?.id ?? null);
+        // Clear cache when new videos are uploaded
+        setSpeedCurveCache(null);
+        prevAudioBlobRef.current = null;
+        prevAudioSettingsRef.current = null;
         void evaluateVideoEncodeCapability(preparedSegments);
       } catch (error) {
         console.error('Failed to process uploaded videos', error);
@@ -488,7 +507,37 @@ export default function Home() {
   };
 
   const handleReapplyFinalVideo = async (options?: AudioFinalizeOptions) => {
-    await handleFinalizeVideo(undefined, options, true);
+    // Determine update reason based on what changed
+    let reason: UpdateReason = 'full';
+
+    if (options?.updateHint) {
+      // Use hint from FinalVideoEditor if provided
+      reason = options.updateHint;
+    } else if (speedCurveCache && finalVideo) {
+      // Detect what changed
+      const audioFileChanged = options?.audioBlob !== prevAudioBlobRef.current;
+      const audioSettingsChanged =
+        options?.audioSettings &&
+        prevAudioSettingsRef.current &&
+        (options.audioSettings.fadeIn !== prevAudioSettingsRef.current.fadeIn ||
+          options.audioSettings.fadeOut !== prevAudioSettingsRef.current.fadeOut);
+
+      if (audioSettingsChanged && !audioFileChanged) {
+        reason = 'audio-fade';
+      } else if (audioFileChanged) {
+        reason = 'audio-file';
+      }
+    }
+
+    // Update refs for next comparison
+    if (options?.audioBlob) {
+      prevAudioBlobRef.current = options.audioBlob;
+    }
+    if (options?.audioSettings) {
+      prevAudioSettingsRef.current = options.audioSettings;
+    }
+
+    await handleFinalizeVideo(undefined, options, true, reason);
   };
 
   const runPreflightChecks = (segments: TransitionVideo[]): PreflightWarning[] => {
@@ -560,7 +609,8 @@ export default function Home() {
   const handleFinalizeVideo = async (
     segmentsOverride?: TransitionVideo[],
     options?: AudioFinalizeOptions,
-    skipPreflight: boolean = false
+    skipPreflight: boolean = false,
+    updateReason: UpdateReason = 'full'
   ) => {
     const baseSegments = segmentsOverride ?? transitionVideos;
 
@@ -580,20 +630,31 @@ export default function Home() {
 
       const segmentsToFinalize = syncSegmentsToLoopCount(baseSegments, loopCount);
 
-      const finalBlob = await finalizeVideos(
+      // Build context for finalization
+      const context: FinalizeContext = {
+        reason: updateReason,
+        cachedBlobs: speedCurveCache ?? undefined,
+        previousFinalVideo: finalVideo?.blob,
+        audioBlob: options?.audioBlob,
+        audioSettings: options?.audioSettings,
+      };
+
+      const result = await finalizeVideos(
         segmentsToFinalize,
+        context,
         (progress) => {
           setFinalizationProgress(progress.progress);
           setFinalizationMessage(progress.message);
         },
-        undefined, // Let the hook determine duration from metadata/content
-        options?.audioBlob,
-        options?.audioSettings
+        undefined // Let the hook determine duration from metadata/content
       );
 
-      if (!finalBlob) {
+      if (!result) {
         throw new Error('Failed to finalize video');
       }
+
+      // Update cache for future audio-only updates
+      setSpeedCurveCache(result.speedCurvedCache);
 
       // Revoke old object URL to free memory
       if (finalVideo?.url) {
@@ -601,12 +662,12 @@ export default function Home() {
       }
 
       // Create new object URL for preview and download
-      const objectUrl = URL.createObjectURL(finalBlob);
+      const objectUrl = URL.createObjectURL(result.finalBlob);
 
       setFinalVideo({
-        blob: finalBlob,
+        blob: result.finalBlob,
         url: objectUrl,
-        size: finalBlob.size,
+        size: result.finalBlob.size,
         createdAt: new Date(),
       });
 
@@ -752,6 +813,10 @@ export default function Home() {
                 setUploadedVideos([]);
                 setSelectedSegmentId(null);
                 setLoopCount(1);
+                // Clear cache when exiting
+                setSpeedCurveCache(null);
+                prevAudioBlobRef.current = null;
+                prevAudioSettingsRef.current = null;
               }}
               onDownload={handleDownloadFinalVideo}
               loopCount={loopCount}
@@ -835,16 +900,16 @@ export default function Home() {
                   width={false}
                   italic={false}
                   alpha={false}
-                  flex={true}
-                  minFontSize={40}
-                  className="text-4xl sm:text-6xl md:text-8xl lg:text-[140px] font-bold tracking-tight text-foreground"
+                  flex={false}
+                  minFontSize={48}
+                  className="text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight text-foreground max-w-4xl"
                 />
                 {uploadedVideos.length === 0 && (
                   <div className="flex flex-col items-center gap-2 px-4">
                     <p className="max-w-lg text-base sm:text-lg text-muted-foreground">
                       Free tool to stitch and apply ease curves to short videos.
                     </p>
-                    <p className="text-xs text-muted-foreground/50">v0.1.1-debug</p>
+                    <p className="text-xs text-muted-foreground/50">v0.1.2</p>
                   </div>
                 )}
               </div>
@@ -922,6 +987,10 @@ export default function Home() {
                         });
                         setFinalVideo(null);
                         setSelectedSegmentId(null);
+                        // Clear cache when resetting
+                        setSpeedCurveCache(null);
+                        prevAudioBlobRef.current = null;
+                        prevAudioSettingsRef.current = null;
                       }}
                     >
                       Reset

@@ -15,7 +15,7 @@ import {
   canEncodeVideo,
 } from 'mediabunny';
 import type { Rotation } from 'mediabunny';
-import { DEFAULT_BITRATE } from '@/lib/speed-curve-config';
+import { DEFAULT_BITRATE, MAX_OUTPUT_FPS } from '@/lib/speed-curve-config';
 import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 
 const FALLBACK_WIDTH = 1920;
@@ -254,7 +254,7 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
           target: bufferTarget,
         });
 
-        output.addVideoTrack(videoSource, { rotation: aggregateRotation });
+        output.addVideoTrack(videoSource, { rotation: aggregateRotation, frameRate: MAX_OUTPUT_FPS });
 
         // Add audio track if provided
         let audioSource: AudioBufferSource | undefined;
@@ -289,7 +289,9 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
         await output.start();
 
         // Track the highest timestamp we've written to ensure monotonicity
-        let highestWrittenTimestamp = 0;
+        // Start at -frameInterval so first frame can be at timestamp 0
+        const frameInterval = 1 / MAX_OUTPUT_FPS;
+        let highestWrittenTimestamp = -frameInterval;
 
         // Process each video blob
         for (let videoIndex = 0; videoIndex < videoBlobs.length; videoIndex++) {
@@ -332,7 +334,6 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
             let samplesFromThisVideo = 0;
             for await (const sample of sink.samples(0, videoDuration)) {
               const originalTimestamp = sample.timestamp ?? 0;
-              const originalDuration = sample.duration ?? 0;
 
               // On first sample, record the minimum timestamp to normalize from
               if (segmentMinTimestamp === null) {
@@ -343,17 +344,22 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
               const normalizedTimestamp = originalTimestamp - segmentMinTimestamp;
               const adjustedTimestamp = segmentBaseTime + normalizedTimestamp;
 
-              // Ensure strict monotonicity - timestamp must be >= highest written
-              const safeTimestamp = Math.max(adjustedTimestamp, highestWrittenTimestamp);
+              // Snap to 60fps grid for consistent framerate
+              const snappedTimestamp = Math.round(adjustedTimestamp / frameInterval) * frameInterval;
 
-              sample.setTimestamp(safeTimestamp);
+              // Skip duplicate frames that land on the same timestamp slot
+              // This ensures strict 60fps without exceeding the target rate
+              if (snappedTimestamp <= highestWrittenTimestamp) {
+                sample.close();
+                continue;
+              }
+
+              sample.setTimestamp(snappedTimestamp);
+              sample.setDuration(frameInterval);
               await videoSource.add(sample);
 
-              // Update highest written timestamp (timestamp + duration of this sample)
-              highestWrittenTimestamp = Math.max(
-                highestWrittenTimestamp,
-                safeTimestamp + originalDuration
-              );
+              // Update highest written timestamp
+              highestWrittenTimestamp = snappedTimestamp;
 
               sample.close();
               samplesFromThisVideo++;

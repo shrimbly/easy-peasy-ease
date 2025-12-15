@@ -6,8 +6,6 @@ import {
   Output,
   VideoSampleSink,
   VideoSampleSource,
-  VideoSample,
-  EncodedPacketSink,
   BlobSource,
   ALL_FORMATS,
   BufferTarget,
@@ -16,18 +14,13 @@ import {
 } from 'mediabunny';
 import type { Rotation } from 'mediabunny';
 import {
-  warpTime,
-  calculateWarpedDuration,
   selectAdaptiveEasing,
   type VideoCurveMetadata,
 } from '@/lib/speed-curve';
-import type { EasingFunction } from '@/lib/easing-functions';
+import { getEasingFunction, type EasingFunction } from '@/lib/easing-functions';
 import {
   DEFAULT_BITRATE,
   TARGET_FRAME_RATE,
-  TARGET_FRAME_DURATION,
-  MIN_OUTPUT_FRAME_DURATION,
-  MIN_SAMPLE_DURATION,
   DEFAULT_INPUT_DURATION,
   DEFAULT_OUTPUT_DURATION,
   DEFAULT_EASING,
@@ -123,14 +116,6 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         updateProgress('processing', 'Creating input from video blob...', 5);
 
-        // console.log('[Debug] applySpeedCurve input:', {
-        //   isBlob: videoBlob instanceof Blob,
-        //   isFile: videoBlob instanceof File,
-        //   size: videoBlob.size,
-        //   type: videoBlob.type,
-        //   name: videoBlob instanceof File ? videoBlob.name : 'anonymous-blob'
-        // });
-
         // Step 1: Create input from blob
         const blobSource = new BlobSource(videoBlob);
         input = new Input({
@@ -148,12 +133,11 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
           typeof videoTrack.rotation === 'number' ? videoTrack.rotation : undefined
         );
 
-        // Step 2: Create sink to read samples
-        updateProgress('processing', 'Creating video sample sink...', 10);
+        // Step 2: Analyze metadata up front so we can adapt easing to the source
+        // NOTE: We delay creating the VideoSampleSink until after all preliminary scanning
+        // to avoid resource contention with parallel Input instances
+        updateProgress('processing', 'Analyzing video metadata...', 10);
 
-        const sink = new VideoSampleSink(videoTrack);
-
-        // Analyze metadata up front so we can adapt easing to the source
         const [trackDuration, containerDuration, packetStats, dimensions] = await Promise.all([
           videoTrack.computeDuration().catch(() => null),
           input.computeDuration().catch(() => null),
@@ -202,77 +186,10 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         const easingToUse: EasingFunction | string =
           adaptiveSelection?.easingFunction ?? easingFunction;
 
-        // Helper to determine actual content duration by scanning packets (no decoding)
-        // Using EncodedPacketSink is much faster and lighter on resources than VideoSampleSink
-        const scanActualDuration = async (blob: Blob): Promise<{
-          firstTimestamp: number;
-          lastTimestamp: number;
-          duration: number;
-          packetCount: number;
-        }> => {
-          updateProgress('processing', 'Scanning video duration...', 12);
-          
-          const scanSource = new BlobSource(blob);
-          const scanInput = new Input({ source: scanSource, formats: ALL_FORMATS });
-          
-          try {
-            const scanTracks = await scanInput.getVideoTracks();
-            if (scanTracks.length === 0) {
-              console.warn('[Debug] No video tracks found during scan');
-              scanInput.dispose();
-              return { firstTimestamp: 0, lastTimestamp: 0, duration: 0, packetCount: 0 };
-            }
-            
-            const scanTrack = scanTracks[0];
-            const packetSink = new EncodedPacketSink(scanTrack);
-            
-            let minT = Infinity;
-            let maxT = -Infinity;
-            let lastDur = 0;
-            let packetCount = 0;
-            
-            // Iterate all packets to find exact bounds
-            // This is lightweight as it only reads container headers
-            for await (const packet of packetSink.packets()) {
-              const t = packet.timestamp;
-              const d = packet.duration;
-              
-              if (t < minT) minT = t;
-              if (t > maxT) maxT = t;
-              lastDur = d;
-              packetCount++;
-            }
-            
-            // Dispose input to free file handle
-            scanInput.dispose();
-            
-            if (!Number.isFinite(minT) || !Number.isFinite(maxT)) {
-              return { firstTimestamp: 0, lastTimestamp: 0, duration: 0, packetCount: 0 };
-            }
-            
-            // Calculate duration: (last_start - first_start) + last_duration
-            const duration = (maxT - minT) + lastDur;
-            return {
-              firstTimestamp: minT,
-              lastTimestamp: maxT,
-              duration,
-              packetCount
-            };
-          } catch (e) {
-             console.warn('Error scanning duration:', e);
-             try { scanInput.dispose(); } catch {}
-             return { firstTimestamp: 0, lastTimestamp: 0, duration: 0, packetCount: 0 };
-          }
-        };
-
-        // Scan for actual duration using the blob (safer than reusing track)
-        const { firstTimestamp: scannedFirstT, duration: scannedDuration, packetCount } = await scanActualDuration(videoBlob);
-        
         const effectiveInputDuration =
-          scannedDuration > 0 ? scannedDuration :
-          (typeof metadata.duration === 'number' && Number.isFinite(metadata.duration) && metadata.duration > 0
+          typeof metadata.duration === 'number' && Number.isFinite(metadata.duration) && metadata.duration > 0
             ? metadata.duration
-            : inputDuration);
+            : inputDuration;
             
         const fpsDisplay = metadata.frameRate.toFixed(1);
         const bitrateDisplay = (metadata.bitrate / 1_000_000).toFixed(1);
@@ -293,14 +210,9 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         // Determine best supported resolution/bitrate
         const sourceWidth = dimensions.width;
         const sourceHeight = dimensions.height;
-        const sourceFrameRate =
-          typeof metadata.frameRate === 'number' && Number.isFinite(metadata.frameRate)
-            ? metadata.frameRate
-            : TARGET_FRAME_RATE;
-        const targetFramerate = Math.min(
-          MAX_OUTPUT_FPS,
-          Math.max(15, Math.round(sourceFrameRate))
-        );
+        // Always output at MAX_OUTPUT_FPS (60fps) for smooth easing, regardless of source fps
+        // The output-driven emission will repeat/skip source frames as needed
+        const targetFramerate = MAX_OUTPUT_FPS;
 
         type VideoTier = {
           width: number;
@@ -399,126 +311,99 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
           target: bufferTarget,
         });
 
-        output.addVideoTrack(videoSource, { rotation: trackRotation });
+        output.addVideoTrack(videoSource, { rotation: trackRotation, frameRate: selectedConfig.framerate });
 
         updateProgress('processing', 'Starting output encoding...', 25);
 
         await output.start();
 
-        // Step 4: Process each sample with speed curve - INDEX BASED STRATEGY
-        // Instead of relying on timestamps (which can be unreliable on Android), we map the *index*
-        // of the frame to the output time. This ensures we always use exactly the frames we have
-        // to fill the 1.5s output, creating an "elastic" timeline that never freezes.
-        let processedSamples = 0;
-        
-        // We scan for packet count, but if the decoder drops frames, we might get fewer.
-        // We'll use the scanned count as the "expected" count for the curve.
-        const expectedSampleCount = packetCount > 0 ? packetCount : Math.ceil(effectiveInputDuration * 30);
-        
-        // Track timeline to ensure monotonicity
-        let lastOutputTimestamp = 0;
-        let lastOutputClone: VideoSampleLike | null = null;
+        // Step 4: OUTPUT-DRIVEN FRAME EMISSION
+        // For each output frame, calculate which source timestamp to fetch using the easing function
+
+        const minFrameInterval = 1 / selectedConfig.framerate;
+        const totalOutputFrames = Math.floor(outputDuration * selectedConfig.framerate);
+
+        // Resolve easing function once for efficiency
+        const easingFunc = typeof easingToUse === 'string'
+          ? getEasingFunction(easingToUse)
+          : easingToUse;
 
         const emitSample = async (
           sourceSample: VideoSampleLike,
           timestamp: number,
-          duration: number,
-          replaceLastClone: boolean = true
+          duration: number
         ) => {
           const outputSample = sourceSample.clone();
           outputSample.setTimestamp(timestamp);
           outputSample.setDuration(duration);
           await videoSource.add(outputSample);
-          if (replaceLastClone) {
-            if (lastOutputClone) {
-              lastOutputClone.close();
-            }
-            lastOutputClone = outputSample.clone();
-          }
           outputSample.close();
         };
 
-        // Use a generous duration for the sink to ensure we catch stragglers,
-        // but the logic is now driven by sample index.
-        const processingLimit = effectiveInputDuration * 2.0;
+        // OUTPUT-DRIVEN FRAME EMISSION using samplesAtTimestamps()
+        // Instead of buffering all frames, we pre-calculate source timestamps and use
+        // Mediabunny's optimized decoding pipeline for random access
+        updateProgress('processing', 'Preparing frame decoder...', 25);
+        const sink = new VideoSampleSink(videoTrack);
 
-        for await (const sample of sink.samples(0, processingLimit)) {
-          const originalDur = sample.duration ?? TARGET_FRAME_DURATION;
+        // Pre-calculate all source timestamps we need based on easing function
+        // For each output frame, determine which source timestamp to fetch
+        const sourceTimestamps: number[] = [];
+        const outputTimestamps: number[] = [];
 
-          // Elastic Warping: Map sample index to time [0, 1]
-          // We assume the current sample is at index `processedSamples`.
-          // We map its "start" and "end" in index-space to the output time.
-          
-          const progressStart = processedSamples / expectedSampleCount;
-          const progressEnd = (processedSamples + 1) / expectedSampleCount;
+        for (let outputSlot = 0; outputSlot < totalOutputFrames; outputSlot++) {
+          const outputTime = outputSlot * minFrameInterval;
+          const outputProgress = totalOutputFrames > 1
+            ? outputSlot / (totalOutputFrames - 1)
+            : 0;
 
-          // Apply easing to the normalized progress [0, 1]
-          // The easing function maps domain [0, 1] to range [0, 1]
-          // We then scale by outputDuration to get seconds.
-          const easingFunc = typeof easingToUse === 'string' 
-            ? (t: number) => warpTime(t * effectiveInputDuration, effectiveInputDuration, 1, easingToUse) // reuse warpTime for curve shape
-            : (t: number) => {
-                // If it's a raw function, we need to check if it expects 0-1 or seconds. 
-                // Typically our easing functions are 0-1.
-                // Let's assume standard easing signature: f(t) -> 0..1
-                return typeof easingToUse === 'function' ? easingToUse(t) : t;
-            };
-            
-          // Actually, `warpTime` is designed to take (time, inputDur, outputDur).
-          // We can just treat "1.0" as the input duration and "outputDuration" as the output.
-          // So warpTime(progress, 1.0, outputDuration) works perfect.
-          
-          const startT = warpTime(progressStart, 1.0, outputDuration, easingToUse);
-          const endT = warpTime(progressEnd, 1.0, outputDuration, easingToUse);
-          
-          const sampleDuration = Math.max(MIN_SAMPLE_DURATION, endT - startT);
-          const sampleTimestamp = startT;
+          // Apply easing function: maps output progress to source progress
+          const sourceProgress = easingFunc(outputProgress);
 
-          // Ensure monotonicity and fill gaps
-          const safeTimestamp = Math.max(sampleTimestamp, lastOutputTimestamp);
-          
-          // If we have gone past the output duration, stop.
-          if (safeTimestamp >= outputDuration - MIN_SAMPLE_DURATION) {
-             sample.close();
-             break;
+          // Map to source timestamp, clamped to valid range
+          const sourceTime = Math.max(0, Math.min(
+            sourceProgress * effectiveInputDuration,
+            effectiveInputDuration - 0.001
+          ));
+
+          sourceTimestamps.push(sourceTime);
+          outputTimestamps.push(outputTime);
+        }
+
+        updateProgress('processing', `Processing ${totalOutputFrames} frames...`, 30);
+
+        // Use samplesAtTimestamps for efficient random-access decoding
+        // This uses Mediabunny's optimized pipeline that decodes each packet at most once
+        let emittedCount = 0;
+        const samplesIterator = sink.samplesAtTimestamps(sourceTimestamps);
+
+        for await (const sample of samplesIterator) {
+          if (!sample) {
+            console.warn(`[SpeedCurve] Null sample at index ${emittedCount}, skipping`);
+            emittedCount++;
+            continue;
           }
-          
-          // Clip duration if it extends past output limit
-          const clippedDuration = Math.min(sampleDuration, outputDuration - safeTimestamp);
 
-          if (clippedDuration > 0) {
-             await emitSample(sample, safeTimestamp, clippedDuration);
-             lastOutputTimestamp = safeTimestamp + clippedDuration;
-          }
-          
+          const outputTime = outputTimestamps[emittedCount];
+
+          await emitSample(sample, outputTime, minFrameInterval);
           sample.close();
-          processedSamples++;
+          emittedCount++;
 
-          // Update progress
-          if (processedSamples % 10 === 0) {
+          // Update progress (30% to 90%)
+          if (emittedCount % 10 === 0) {
+            const emitProgress = emittedCount / totalOutputFrames;
             updateProgress(
               'processing',
-              `Processing frames: ${processedSamples}/${expectedSampleCount}...`,
-              25 + Math.min(65, (processedSamples / expectedSampleCount) * 65)
+              `Encoding: ${emittedCount}/${totalOutputFrames} frames...`,
+              30 + emitProgress * 60
             );
           }
         }
 
-        // Tail handling: If we have fewer samples than expected (decoder drop),
-        // we might have a small gap at the end.
-        // OR if we had more samples, the loop broke early.
-        // In the "fewer samples" case, we stretch the last frame to fill.
-        const remainingDuration = Math.max(0, outputDuration - lastOutputTimestamp);
-        if (remainingDuration > MIN_SAMPLE_DURATION && lastOutputClone) {
-           await emitSample(lastOutputClone, lastOutputTimestamp, remainingDuration, false);
-           lastOutputTimestamp += remainingDuration;
+        if (emittedCount === 0) {
+          throw new Error('No frames were emitted from source video');
         }
-
-        const cloneToDispose = lastOutputClone as unknown as { close(): void } | null;
-        if (cloneToDispose) {
-          cloneToDispose.close();
-        }
-        lastOutputClone = null;
 
         updateProgress('processing', 'Finalizing output...', 95);
 
