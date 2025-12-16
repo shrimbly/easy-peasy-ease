@@ -39,44 +39,86 @@ export function AudioWaveformVisualization({
   onOffsetCommit,
 }: AudioWaveformVisualizationProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [localOffset, setLocalOffset] = useState<number | null>(null);
   const dragStartXRef = useRef(0);
   const dragStartOffsetRef = useRef(0);
+  const pixelsPerSecondRef = useRef(pixelsPerSecond);
+  const onOffsetChangeRef = useRef(onOffsetChange);
+  const onOffsetCommitRef = useRef(onOffsetCommit);
+  const localOffsetRef = useRef<number | null>(null);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!onOffsetChange) return;
+  // Use local offset during drag, otherwise use prop
+  const effectiveOffset = localOffset ?? offset;
+
+  // Keep refs updated
+  useEffect(() => {
+    pixelsPerSecondRef.current = pixelsPerSecond;
+  }, [pixelsPerSecond]);
+
+  useEffect(() => {
+    onOffsetChangeRef.current = onOffsetChange;
+  }, [onOffsetChange]);
+
+  useEffect(() => {
+    onOffsetCommitRef.current = onOffsetCommit;
+  }, [onOffsetCommit]);
+
+  useEffect(() => {
+    localOffsetRef.current = localOffset;
+  }, [localOffset]);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (!onOffsetChangeRef.current) return;
     e.preventDefault();
     e.stopPropagation();
+
+    // Capture pointer for reliable drag tracking
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+
     setIsDragging(true);
     dragStartXRef.current = e.clientX;
     dragStartOffsetRef.current = offset;
-  }, [onOffsetChange, offset]);
+    pixelsPerSecondRef.current = pixelsPerSecond;
+    setLocalOffset(offset); // Initialize local offset
+  }, [offset, pixelsPerSecond]);
 
   useEffect(() => {
     if (!isDragging) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
       const deltaX = e.clientX - dragStartXRef.current;
-      const deltaSeconds = deltaX / pixelsPerSecond;
-      const newOffset = dragStartOffsetRef.current + deltaSeconds;
-      onOffsetChange?.(newOffset);
+      const pps = pixelsPerSecondRef.current;
+      if (pps <= 0) return;
+      const deltaSeconds = deltaX / pps;
+      const rawOffset = dragStartOffsetRef.current + deltaSeconds;
+      // Snap to 0.01 second increments for fine control
+      const newOffset = Math.round(rawOffset * 100) / 100;
+      setLocalOffset(newOffset); // Update local state only during drag
     };
 
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       setIsDragging(false);
-      // Only trigger commit if offset actually changed
-      if (dragStartOffsetRef.current !== offset) {
-        onOffsetCommit?.();
+      const finalOffset = localOffsetRef.current;
+      if (finalOffset !== null && finalOffset !== dragStartOffsetRef.current) {
+        onOffsetChangeRef.current?.(finalOffset); // Commit final value to parent
+        onOffsetCommitRef.current?.();
       }
+      setLocalOffset(null); // Clear local state
     };
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('pointermove', handlePointerMove, { capture: true });
+    window.addEventListener('pointerup', handlePointerUp, { capture: true });
+    window.addEventListener('pointercancel', handlePointerUp, { capture: true });
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('pointermove', handlePointerMove, { capture: true });
+      window.removeEventListener('pointerup', handlePointerUp, { capture: true });
+      window.removeEventListener('pointercancel', handlePointerUp, { capture: true });
     };
-  }, [isDragging, pixelsPerSecond, onOffsetChange, offset, onOffsetCommit]);
+  }, [isDragging]);
 
   if (!waveformData) {
     return null;
@@ -99,12 +141,12 @@ export function AudioWaveformVisualization({
   const totalPeaks = waveformData.peaks.length;
 
   // Calculate which portion of the audio maps to the visible timeline
-  // offset > 0: audio is delayed (silence at start, audio starts later)
-  // offset < 0: audio is trimmed (skip beginning of audio)
+  // effectiveOffset > 0: audio is delayed (silence at start, audio starts later)
+  // effectiveOffset < 0: audio is trimmed (skip beginning of audio)
 
   // The audio source time that maps to video time 0
-  const audioStartTime = -offset; // If offset is +2s, audio at 0s maps to video 2s, so video 0s has no audio
-                                   // If offset is -2s, audio at 2s maps to video 0s
+  const audioStartTime = -effectiveOffset; // If offset is +2s, audio at 0s maps to video 2s, so video 0s has no audio
+                                            // If offset is -2s, audio at 2s maps to video 0s
 
   // The audio source time that maps to the end of the timeline
   const audioEndTime = audioStartTime + timelineDuration;
@@ -119,12 +161,9 @@ export function AudioWaveformVisualization({
   // Extract the visible peaks
   const visiblePeaks = waveformData.peaks.slice(startPeakIndex, endPeakIndex);
 
-  // Calculate the duration of audio that's actually visible (for the scrubber)
-  const visibleAudioDuration = (endPeakIndex - startPeakIndex) / peaksPerSecond;
-
   // Calculate padding at the start if offset > 0 (delay - silence at beginning)
   // This is the portion of the timeline before audio starts
-  const silenceAtStart = Math.max(0, offset);
+  const silenceAtStart = Math.max(0, effectiveOffset);
   const silenceWidthPixels = silenceAtStart * pixelsPerSecond;
 
   // Calculate the width of the actual waveform
@@ -143,7 +182,7 @@ export function AudioWaveformVisualization({
         tabIndex={onSelect ? 0 : undefined}
         onClick={handleSelect}
         onKeyDown={handleKeyDown}
-        onMouseDown={handleMouseDown}
+        onPointerDown={handlePointerDown}
         className={cn(
           'relative rounded-lg border border-border bg-secondary/20 overflow-hidden transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
           onSelect && !onOffsetChange && 'cursor-pointer',
@@ -182,7 +221,7 @@ export function AudioWaveformVisualization({
               <AudioScrubber
                 data={visiblePeaks}
                 currentTime={Math.max(0, currentTime - silenceAtStart)}
-                duration={visibleAudioDuration}
+                duration={Math.max(0, timelineDuration - silenceAtStart)}
                 height={96}
                 barWidth={3}
                 barGap={1}

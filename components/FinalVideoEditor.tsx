@@ -425,7 +425,7 @@ function FinalVideoEditorComponent({
             type="range"
             min={0.5}
             max={6}
-            step={0.1}
+            step={0.01}
             value={selectedSegment.duration ?? 1.5}
             onChange={(event) =>
               onDurationChange(selectedSegment.id, Number(event.target.value), applyAll)
@@ -435,7 +435,7 @@ function FinalVideoEditorComponent({
           <input
             type="number"
             min={0.1}
-            step={0.1}
+            step={0.01}
             value={(selectedSegment.duration ?? 1.5).toFixed(2)}
             onChange={(event) =>
               onDurationChange(selectedSegment.id, Number(event.target.value), applyAll)

@@ -515,7 +515,10 @@ export default function Home() {
       reason = options.updateHint;
     } else if (speedCurveCache && finalVideo) {
       // Detect what changed
-      const audioFileChanged = options?.audioBlob !== prevAudioBlobRef.current;
+      // Normalize undefined/null to compare correctly
+      const currentAudioBlob = options?.audioBlob ?? null;
+      const previousAudioBlob = prevAudioBlobRef.current ?? null;
+      const audioFileChanged = currentAudioBlob !== previousAudioBlob;
       const audioSettingsChanged =
         options?.audioSettings &&
         prevAudioSettingsRef.current &&
