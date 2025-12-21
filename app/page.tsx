@@ -1,11 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle,
-  Plus,
-} from 'lucide-react';
-import { cn, calculateAspectRatioConsistency } from '@/lib/utils';
+import { useState, useCallback, useEffect } from 'react';
+import { AlertTriangle, Upload } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { LightRays } from '@/components/ui/light-rays';
@@ -14,32 +11,21 @@ import { FinalVideoEditor } from '@/components/FinalVideoEditor';
 import { VideoList } from '@/components/VideoList';
 import { useFinalizeVideo } from '@/hooks/useFinalizeVideo';
 import { useProjectState } from '@/hooks/useProjectState';
+import TextPressure from '@/components/text/text-pressure';
 import {
   TransitionVideo,
-  FinalVideo,
   AudioProcessingOptions,
-  SpeedCurvedBlobCache,
   UpdateReason,
-  FinalizeContext,
   PreflightWarning,
-  VideoMetadata,
+  FinalizeContext,
 } from '@/lib/types';
-import TextPressure from '@/components/text/text-pressure';
-import { canEncodeVideo, getEncodableVideoCodecs } from 'mediabunny';
 import {
-  DEFAULT_CUSTOM_BEZIER,
-  EASING_PRESETS,
-  getPresetBezier,
-} from '@/lib/easing-presets';
-import { DEFAULT_EASING } from '@/lib/speed-curve-config';
-import {
-  readVideoMetadata,
-  getCodecStringForResolution,
-  estimateBitrateForResolution,
-  formatResolutionLabel,
   runPreflightChecks,
 } from '@/lib/project-service';
-import { AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
+import {
+  getPresetBezier,
+  DEFAULT_EASING,
+} from '@/lib/easing-presets';
 
 type AudioFinalizeOptions = {
   audioBlob?: Blob;
@@ -510,17 +496,7 @@ export default function Home() {
               isUpdating={isFinalizingVideo}
               onExit={() => {
                 setFinalVideo(null);
-                setTransitionVideos((prev) => {
-                  cleanupSegmentResources(prev);
-                  return [];
-                });
-                setUploadedVideos([]);
-                setSelectedSegmentId(null);
-                setLoopCount(1);
-                // Clear cache when exiting
-                setSpeedCurveCache(null);
-                prevAudioBlobRef.current = null;
-                prevAudioSettingsRef.current = null;
+                resetProject();
               }}
               onDownload={handleDownloadFinalVideo}
               loopCount={loopCount}
@@ -622,29 +598,8 @@ export default function Home() {
                 isFinalizing={isFinalizingVideo}
                 finalVideo={finalVideo}
                 onAddVideos={handleAddMoreVideos}
-                onReset={() => {
-                  setUploadedVideos([]);
-                  setTransitionVideos((prev) => {
-                    cleanupSegmentResources(prev);
-                    return [];
-                  });
-                  setFinalVideo(null);
-                  setSelectedSegmentId(null);
-                  // Clear cache when resetting
-                  setSpeedCurveCache(null);
-                  prevAudioBlobRef.current = null;
-                  prevAudioSettingsRef.current = null;
-                }}
-                onRemoveVideo={(id, name) => {
-                  setTransitionVideos((prev) => {
-                    const target = prev.find((v) => v.id === id);
-                    if (target) {
-                      cleanupSegmentResources([target]);
-                    }
-                    return prev.filter((v) => v.id !== id);
-                  });
-                  setUploadedVideos((prev) => prev.filter((f) => f.name !== name));
-                }}
+                onReset={() => resetProject()}
+                onRemoveVideo={removeVideo}
                 onPlayVideo={handlePlayTransitionVideo}
                 onReorder={reorderTransitionVideos}
                 onFinalize={() => void handleFinalizeVideo()}
