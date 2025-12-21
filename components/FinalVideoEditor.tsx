@@ -6,8 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Play } from 'lucide-react';
 import { getPresetBezier } from '@/lib/easing-presets';
 import { useVideoPlayback } from '@/hooks/useVideoPlayback';
-import { getPresetBezier } from '@/lib/easing-presets';
-import { useVideoPlayback } from '@/hooks/useVideoPlayback';
 import { VideoPlaybackControls } from '@/components/VideoPlaybackControls';
 import {
   VideoTimeline,
