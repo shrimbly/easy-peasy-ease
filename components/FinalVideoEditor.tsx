@@ -3,6 +3,7 @@
 import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FinalVideo, TransitionVideo, AudioProcessingOptions, UpdateReason } from '@/lib/types';
 import { Label } from '@/components/ui/label';
+import { calculateAspectRatioConsistency } from '@/lib/utils';
 import { CubicBezierEditor } from '@/components/CubicBezierEditor';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,6 +14,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Loader2, Play } from 'lucide-react';
 import { getPresetBezier } from '@/lib/easing-presets';
 import { useVideoPlayback } from '@/hooks/useVideoPlayback';
@@ -220,6 +227,8 @@ function FinalVideoEditorComponent({
 
   const handleRemoveAudio = useCallback(() => {
     setAudioFile(null);
+    audioFileChangedRef.current = true;
+    setUpdatePromptReason('audio');
     if (inspectorView === 'audio') {
       setInspectorView('segments');
     }
@@ -306,15 +315,15 @@ function FinalVideoEditorComponent({
   const promptCopy =
     updatePromptReason === 'audio'
       ? {
-          title: 'Update video to mix your audio',
-          description: 'We need to restitch the clips with the uploaded track so you can preview it.',
-        }
+        title: 'Update video to mix your audio',
+        description: 'We need to restitch the clips with the uploaded track so you can preview it.',
+      }
       : updatePromptReason === 'loop'
-      ? {
+        ? {
           title: 'Update video to apply your loop count',
           description: 'Duplicated clips require a fresh render to reflect easing or duration tweaks.',
         }
-      : {
+        : {
           title: '',
           description: '',
         };
@@ -530,6 +539,58 @@ function FinalVideoEditorComponent({
               createdAt={finalVideo.createdAt}
               actions={
                 <div className="flex flex-wrap items-center gap-2 md:gap-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {(() => {
+                    const validSegments = segments
+                      .filter((s) => s.width && s.height)
+                      .map((s) => {
+                        const r = s.width! / s.height!;
+                        return { r: Number(r.toFixed(2)), label: `${s.width}x${s.height}` };
+                      });
+
+                    if (validSegments.length <= 1) return null;
+
+                    const counts: Record<number, number> = {};
+                    for (const { r } of validSegments) {
+                      counts[r] = (counts[r] || 0) + 1;
+                    }
+
+                    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+                    const maxCount = entries[0][1];
+                    const consistency = Math.round((maxCount / validSegments.length) * 100);
+
+                    if (consistency < 100) {
+                      // Generate breakdown string
+                      const breakdown = entries.map(([ratio, count]) => {
+                        const rVal = Number(ratio);
+                        let label = `${rVal}:1`;
+                        if (Math.abs(rVal - 1.78) < 0.05) label = "16:9 (Landscape)";
+                        else if (Math.abs(rVal - 0.56) < 0.05) label = "9:16 (Portrait)";
+                        else if (Math.abs(rVal - 1.0) < 0.05) label = "1:1 (Square)";
+                        else if (Math.abs(rVal - 1.33) < 0.05) label = "4:3";
+
+                        return `${count} video${count === 1 ? '' : 's'} are ${label}`;
+                      }).join(', ');
+
+                      return (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div
+                                className="flex items-center gap-1.5 rounded-full bg-yellow-500/10 px-2.5 py-1 text-yellow-600 border border-yellow-500/20 cursor-help"
+                              >
+                                <span className="h-1.5 w-1.5 rounded-full bg-yellow-500 animate-pulse" />
+                                <span>Quality: {consistency}%</span>
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p className="max-w-xs">Mixed Aspect Ratios detected. Breakdown: {breakdown}. For best results, use consistent aspect ratios.</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      );
+                    }
+                    return null;
+                  })()}
                   <label className="flex items-center gap-1.5 md:gap-2">
                     <span>Loops</span>
                     <select
@@ -600,26 +661,26 @@ function FinalVideoEditorComponent({
             onValueChange={(v) => setInspectorView(v as 'segments' | 'audio' | 'export')}
             className="flex flex-col h-full w-full"
           >
-              <TabsList className="grid w-full grid-cols-3 lg:hidden mb-4 bg-secondary/50 p-1 rounded-xl">
-                <TabsTrigger 
-                  value="segments" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
-                >
-                  Clip
-                </TabsTrigger>
-                <TabsTrigger 
-                  value="audio" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
-                >
-                  Audio
-                </TabsTrigger>
-                <TabsTrigger 
-                  value="export" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
-                >
-                  Export
-                </TabsTrigger>
-              </TabsList>
+            <TabsList className="grid w-full grid-cols-3 lg:hidden mb-4 bg-secondary/50 p-1 rounded-xl">
+              <TabsTrigger
+                value="segments"
+                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+              >
+                Clip
+              </TabsTrigger>
+              <TabsTrigger
+                value="audio"
+                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+              >
+                Audio
+              </TabsTrigger>
+              <TabsTrigger
+                value="export"
+                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+              >
+                Export
+              </TabsTrigger>
+            </TabsList>
 
             <div className="flex-1 overflow-y-auto min-h-[400px] lg:min-h-0">
               <TabsContent value="segments" className="mt-0 h-full space-y-4 data-[state=inactive]:hidden">

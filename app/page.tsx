@@ -1,8 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import {
+  Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle,
+  Plus,
+} from 'lucide-react';
+import { cn, calculateAspectRatioConsistency } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { LightRays } from '@/components/ui/light-rays';
@@ -336,17 +339,26 @@ export default function Home() {
     [setTransitionVideos]
   );
 
-  const handleVideosUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
+  const processNewVideoFiles = useCallback(
+    async (files: FileList | null, append: boolean = false) => {
       if (!(files && files[0])) {
         return;
       }
 
       const videoFiles = Array.from(files).filter((f) => f.type.startsWith('video/'));
-      setUploadedVideos(videoFiles);
+      if (videoFiles.length === 0) return;
+
+      if (append) {
+        setUploadedVideos((prev) => [...prev, ...videoFiles]);
+      } else {
+        setUploadedVideos(videoFiles);
+      }
 
       try {
+        const nextIdStart = append
+          ? Math.max(0, ...transitionVideos.map((v) => v.id)) + 1
+          : 1;
+
         const preparedSegments = await Promise.all(
           videoFiles.map(async (file, index) => {
             const buffer = await file.arrayBuffer();
@@ -354,7 +366,7 @@ export default function Home() {
             const objectUrl = URL.createObjectURL(cachedBlob);
 
             return {
-              id: index + 1,
+              id: nextIdStart + index,
               name: file.name,
               url: objectUrl,
               loading: false,
@@ -374,26 +386,78 @@ export default function Home() {
         );
 
         setTransitionVideos((prev) => {
-          cleanupSegmentResources(prev);
-          return preparedSegments;
+          if (!append) {
+            cleanupSegmentResources(prev);
+            return preparedSegments;
+          }
+          return [...prev, ...preparedSegments];
         });
-        setLoopCount(1);
-        setSelectedSegmentId(preparedSegments[0]?.id ?? null);
-        // Clear cache when new videos are uploaded
+
+        if (!append) {
+          setLoopCount(1);
+          setSelectedSegmentId(preparedSegments[0]?.id ?? null);
+        } else {
+          // Keep existing selection or select the first new one if nothing selected?
+          // Usually keeping selection is better.
+        }
+
+        // Clear cache as the composition has changed
         setSpeedCurveCache(null);
         prevAudioBlobRef.current = null;
         prevAudioSettingsRef.current = null;
+
         void evaluateVideoEncodeCapability(preparedSegments);
       } catch (error) {
         console.error('Failed to process uploaded videos', error);
-      } finally {
-        if (e.target) {
-          e.target.value = '';
-        }
       }
     },
-    [cleanupSegmentResources, evaluateVideoEncodeCapability]
+    [transitionVideos, cleanupSegmentResources, evaluateVideoEncodeCapability]
   );
+
+  const handleVideosUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      void processNewVideoFiles(e.target.files, false);
+      if (e.target) e.target.value = '';
+    },
+    [processNewVideoFiles]
+  );
+
+  const handleAddMoreVideos = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      void processNewVideoFiles(e.target.files, true);
+      if (e.target) e.target.value = '';
+    },
+    [processNewVideoFiles]
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isSupported) setIsDropZoneHovered(true);
+  }, [isSupported]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropZoneHovered(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDropZoneHovered(false);
+
+      if (!isSupported) return;
+
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) {
+        void processNewVideoFiles(files, false);
+      }
+    },
+    [isSupported, processNewVideoFiles]
+  );
+
   const handleSelectSegment = (id: number) => {
     setSelectedSegmentId(id);
   };
@@ -584,7 +648,24 @@ export default function Home() {
       });
     }
 
-    // 3. Check total file size
+    // 3. Check for mixed aspect ratios
+    const validVideos = segments
+      .filter((s) => s.width && s.height)
+      .map((s) => ({ width: s.width!, height: s.height! }));
+
+    if (validVideos.length > 1) {
+      const consistency = calculateAspectRatioConsistency(validVideos);
+      if (consistency < 100) {
+        warnings.push({
+          id: 'aspect-ratio-mismatch',
+          title: 'Mixed Aspect Ratios',
+          description: "Look, you've actually put the wrong file types in. But don't worry about it, we're going to encode it for you so you get a rough idea of what this looks like. But it might give an idea to go back and fix that so that it's consistent.",
+          severity: 'warning',
+        });
+      }
+    }
+
+    // 4. Check total file size
     const totalSize = segments.reduce((acc, s) => acc + (s.file?.size || 0), 0);
     if (totalSize > MAX_TOTAL_SIZE_BYTES) {
       warnings.push({
@@ -826,70 +907,7 @@ export default function Home() {
               onLoopCountChange={handleLoopCountChange}
             />
 
-            <Dialog open={showPreflightDialog} onOpenChange={setShowPreflightDialog}>
-              <DialogContent className="sm:max-w-[425px]">
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
-                    <AlertTriangle className="h-5 w-5" />
-                    Review Issues
-                  </DialogTitle>
-                  <DialogDescription>
-                    We found some potential issues with your videos.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="max-h-[60vh] overflow-y-auto py-4 space-y-4">
-                  {preflightWarnings.map((warning) => (
-                    <div key={warning.id} className={cn("rounded-md border p-3 text-sm",
-                      warning.severity === 'error' ? "bg-destructive/10 border-destructive/20" : "bg-amber-500/10 border-amber-500/20"
-                    )}>
-                      <h5 className={cn("font-semibold mb-1",
-                        warning.severity === 'error' ? "text-destructive" : "text-amber-700 dark:text-amber-400"
-                      )}>
-                        {warning.title}
-                      </h5>
-                      <p className="text-muted-foreground">{warning.description}</p>
-                    </div>
-                  ))}
-                </div>
-                <DialogFooter className="gap-2 sm:gap-0">
-                  <Button variant="outline" onClick={() => setShowPreflightDialog(false)}>
-                    Back to Edit
-                  </Button>
-                  <Button
-                    variant={preflightWarnings.some(w => w.severity === 'error') ? "destructive" : "default"}
-                    onClick={() => {
-                      setShowPreflightDialog(false);
-                      void handleFinalizeVideo(undefined, undefined, true);
-                    }}
-                  >
-                    Proceed Anyway
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
 
-            <Dialog open={isFinalizingVideo}>
-              <DialogContent className="max-w-sm">
-                <DialogTitle className="sr-only">Video Processing</DialogTitle>
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <p className="font-semibold text-foreground">
-                      {finalizationMessage}
-                    </p>
-                    <div className="flex items-center justify-between text-sm text-muted-foreground">
-                      <span>Processing...</span>
-                      <span>{Math.round(finalizationProgress)}%</span>
-                    </div>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-                    <div
-                      className="h-full bg-primary transition-all duration-300"
-                      style={{ width: `${finalizationProgress}%` }}
-                    />
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
           </section>
         ) : (
           <>
@@ -938,10 +956,14 @@ export default function Home() {
                       "rounded-lg border-2 border-dashed border-muted-foreground/30 p-12 text-center transition-colors min-h-[300px] flex items-center justify-center",
                       isSupported
                         ? "hover:border-muted-foreground/50 cursor-pointer"
-                        : "cursor-not-allowed opacity-75"
+                        : "cursor-not-allowed opacity-75",
+                      isDropZoneHovered && "border-primary bg-primary/5"
                     )}
                     onMouseEnter={() => isSupported && setIsDropZoneHovered(true)}
                     onMouseLeave={() => setIsDropZoneHovered(false)}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
                     onClick={() => isSupported && document.getElementById('videos-input')?.click()}
                     onKeyDown={(e) => {
                       if (isSupported && (e.key === 'Enter' || e.key === ' ')) {
@@ -979,25 +1001,46 @@ export default function Home() {
                     <h3 className="text-lg font-semibold">
                       Uploaded Videos ({uploadedVideos.length})
                     </h3>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setUploadedVideos([]);
-                        setTransitionVideos((prev) => {
-                          cleanupSegmentResources(prev);
-                          return [];
-                        });
-                        setFinalVideo(null);
-                        setSelectedSegmentId(null);
-                        // Clear cache when resetting
-                        setSpeedCurveCache(null);
-                        prevAudioBlobRef.current = null;
-                        prevAudioSettingsRef.current = null;
-                      }}
-                    >
-                      Reset
-                    </Button>
+                    <div className="flex gap-2">
+                      <input
+                        type="file"
+                        accept="video/*"
+                        onChange={(event) => {
+                          void handleAddMoreVideos(event);
+                        }}
+                        className="hidden"
+                        id="add-videos-input"
+                        multiple
+                        disabled={!isSupported}
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => document.getElementById('add-videos-input')?.click()}
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        Add Video
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setUploadedVideos([]);
+                          setTransitionVideos((prev) => {
+                            cleanupSegmentResources(prev);
+                            return [];
+                          });
+                          setFinalVideo(null);
+                          setSelectedSegmentId(null);
+                          // Clear cache when resetting
+                          setSpeedCurveCache(null);
+                          prevAudioBlobRef.current = null;
+                          prevAudioSettingsRef.current = null;
+                        }}
+                      >
+                        Reset
+                      </Button>
+                    </div>
                   </div>
 
                   {/* Videos List with Reordering */}
@@ -1194,6 +1237,72 @@ export default function Home() {
 
           </>
         )}
+
+        <Dialog open={showPreflightDialog} onOpenChange={setShowPreflightDialog}>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+                <AlertTriangle className="h-5 w-5" />
+                Review Issues
+              </DialogTitle>
+              <DialogDescription>
+                We found some potential issues with your videos.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[60vh] overflow-y-auto py-4 space-y-4">
+              {preflightWarnings.map((warning) => (
+                <div key={warning.id} className={cn("rounded-md border p-3 text-sm",
+                  warning.severity === 'error' ? "bg-destructive/10 border-destructive/20" : "bg-amber-500/10 border-amber-500/20"
+                )}>
+                  <h5 className={cn("font-semibold mb-1",
+                    warning.severity === 'error' ? "text-destructive" : "text-amber-700 dark:text-amber-400"
+                  )}>
+                    {warning.title}
+                  </h5>
+                  <p className="text-muted-foreground">{warning.description}</p>
+                </div>
+              ))}
+            </div>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => setShowPreflightDialog(false)}>
+                Back to Edit
+              </Button>
+              <Button
+                variant={preflightWarnings.some(w => w.severity === 'error') ? "destructive" : "default"}
+                onClick={() => {
+                  setShowPreflightDialog(false);
+                  void handleFinalizeVideo(undefined, undefined, true);
+                }}
+              >
+                Proceed Anyway
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isFinalizingVideo}>
+          <DialogContent className="max-w-sm">
+            <DialogTitle className="sr-only">Video Processing</DialogTitle>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <p className="font-semibold text-foreground">
+                  {finalizationMessage}
+                </p>
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>Processing...</span>
+                  <span>{Math.round(finalizationProgress)}%</span>
+                </div>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                <div
+                  className="h-full bg-primary transition-all duration-300"
+                  style={{ width: `${finalizationProgress}%` }}
+                />
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
       </main>
 
     </div>
