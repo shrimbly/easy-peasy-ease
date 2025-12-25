@@ -16,6 +16,9 @@ Upload video segments → Order and trim → Apply speed curves → Stitch into 
 - **Video Engine**: Mediabunny (client-side WASM/JS processing)
 - **State Management**: React hooks + custom hooks (`useFinalizeVideo`, `useVideoPlayback`, `useAudioVisualization`)
 
+## Added
+- ** Rearrange the videos even on the edit video frames main screen. Very useful when testing your footage with the different S curve slow-fast-slow transitions.
+
 ## Getting Started
 
 ```bash
