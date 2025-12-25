@@ -505,6 +505,7 @@ export default function Home() {
               onDownload={handleDownloadFinalVideo}
               loopCount={loopCount}
               onLoopCountChange={handleLoopCountChange}
+              onReorder={reorderTransitionVideos}
             />
 
 

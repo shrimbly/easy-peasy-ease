@@ -42,6 +42,7 @@ interface FinalVideoEditorProps {
   onDownload: () => void;
   loopCount: number;
   onLoopCountChange: (next: number) => void;
+  onReorder?: (fromIndex: number, toIndex: number) => void;
 }
 
 export const FinalVideoEditor = memo(FinalVideoEditorComponent);
@@ -63,6 +64,7 @@ function FinalVideoEditorComponent({
   onDownload,
   loopCount,
   onLoopCountChange,
+  onReorder,
 }: FinalVideoEditorProps) {
   const selectedSegment = useMemo(
     () => segments.find((segment) => segment.id === selectedSegmentId) ?? null,
@@ -392,6 +394,7 @@ function FinalVideoEditorComponent({
               onSegmentSelect={handleSegmentSelect}
               zoomValue={timelineZoom}
               onZoomChange={setTimelineZoom}
+              onReorder={onReorder}
               renderAudioTrack={({ trackWidth, pixelsPerSecond, totalDuration }) => (
                 <div className="space-y-1">
                   {!waveformData ? (
