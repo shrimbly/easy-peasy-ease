@@ -146,7 +146,7 @@ export function AudioWaveformVisualization({
 
   // The audio source time that maps to video time 0
   const audioStartTime = -effectiveOffset; // If offset is +2s, audio at 0s maps to video 2s, so video 0s has no audio
-                                            // If offset is -2s, audio at 2s maps to video 0s
+  // If offset is -2s, audio at 2s maps to video 0s
 
   // The audio source time that maps to the end of the timeline
   const audioEndTime = audioStartTime + timelineDuration;
@@ -197,7 +197,7 @@ export function AudioWaveformVisualization({
             type="button"
             variant="ghost"
             size="icon"
-            className="absolute right-2 top-2 z-10 text-muted-foreground hover:text-foreground hover:bg-secondary/80"
+            className="absolute right-2 top-2 z-10 text-muted-foreground hover:text-destructive hover:bg-secondary/80"
             onClick={(event) => {
               event.stopPropagation();
               onRemove();

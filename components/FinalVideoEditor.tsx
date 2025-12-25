@@ -2,18 +2,8 @@
 
 import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FinalVideo, TransitionVideo, AudioProcessingOptions, UpdateReason } from '@/lib/types';
-import { Label } from '@/components/ui/label';
-import { CubicBezierEditor } from '@/components/CubicBezierEditor';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Loader2, Play } from 'lucide-react';
+import { Play } from 'lucide-react';
 import { getPresetBezier } from '@/lib/easing-presets';
 import { useVideoPlayback } from '@/hooks/useVideoPlayback';
 import { VideoPlaybackControls } from '@/components/VideoPlaybackControls';
@@ -27,6 +17,10 @@ import { AudioUploadBox } from '@/components/AudioUploadBox';
 import { AudioWaveformVisualization } from '@/components/AudioWaveformVisualization';
 import { useAudioVisualization } from '@/hooks/useAudioVisualization';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { QualityRating } from '@/components/QualityRating';
+import { UpdatePromptDialog } from '@/components/UpdatePromptDialog';
+import { AudioSettingsPanel } from '@/components/AudioSettingsPanel';
+import { SegmentSettingsPanel } from '@/components/SegmentSettingsPanel';
 
 const LOOP_OPTIONS = [1, 2, 3] as const;
 const BEZIER_THROTTLE_MS = 75;
@@ -48,6 +42,7 @@ interface FinalVideoEditorProps {
   onDownload: () => void;
   loopCount: number;
   onLoopCountChange: (next: number) => void;
+  onReorder?: (fromIndex: number, toIndex: number) => void;
 }
 
 export const FinalVideoEditor = memo(FinalVideoEditorComponent);
@@ -69,6 +64,7 @@ function FinalVideoEditorComponent({
   onDownload,
   loopCount,
   onLoopCountChange,
+  onReorder,
 }: FinalVideoEditorProps) {
   const selectedSegment = useMemo(
     () => segments.find((segment) => segment.id === selectedSegmentId) ?? null,
@@ -220,6 +216,8 @@ function FinalVideoEditorComponent({
 
   const handleRemoveAudio = useCallback(() => {
     setAudioFile(null);
+    audioFileChangedRef.current = true;
+    setUpdatePromptReason('audio');
     if (inspectorView === 'audio') {
       setInspectorView('segments');
     }
@@ -306,15 +304,15 @@ function FinalVideoEditorComponent({
   const promptCopy =
     updatePromptReason === 'audio'
       ? {
-          title: 'Update video to mix your audio',
-          description: 'We need to restitch the clips with the uploaded track so you can preview it.',
-        }
+        title: 'Update video to mix your audio',
+        description: 'We need to restitch the clips with the uploaded track so you can preview it.',
+      }
       : updatePromptReason === 'loop'
-      ? {
+        ? {
           title: 'Update video to apply your loop count',
           description: 'Duplicated clips require a fresh render to reflect easing or duration tweaks.',
         }
-      : {
+        : {
           title: '',
           description: '',
         };
@@ -329,178 +327,6 @@ function FinalVideoEditorComponent({
         <Play className="h-4 w-4" />
         Download
       </Button>
-    </div>
-  );
-
-  const AudioSettingsContent = (
-    <div className="space-y-6">
-      <div>
-        <h4 className="text-2xl font-bold text-foreground">Audio Settings</h4>
-        <p className="text-xs text-muted-foreground">
-          Shape fade envelopes and looping for the background track.
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="audio-fade-in">Fade in (sec)</Label>
-        <div className="flex items-center gap-3">
-          <input
-            id="audio-fade-in"
-            type="range"
-            min={0}
-            max={10}
-            step={0.1}
-            value={audioSettings.fadeIn}
-            onChange={(event) => updateAudioSetting('fadeIn', Number(event.target.value))}
-            className="h-2 flex-1 cursor-pointer rounded-full bg-primary/30"
-          />
-          <input
-            type="number"
-            min={0}
-            max={10}
-            step={0.1}
-            value={audioSettings.fadeIn}
-            onChange={(event) => updateAudioSetting('fadeIn', Number(event.target.value))}
-            className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
-          />
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="audio-fade-out">Fade out (sec)</Label>
-        <div className="flex items-center gap-3">
-          <input
-            id="audio-fade-out"
-            type="range"
-            min={0}
-            max={10}
-            step={0.1}
-            value={audioSettings.fadeOut}
-            onChange={(event) => updateAudioSetting('fadeOut', Number(event.target.value))}
-            className="h-2 flex-1 cursor-pointer rounded-full bg-primary/30"
-          />
-          <input
-            type="number"
-            min={0}
-            max={10}
-            step={0.1}
-            value={audioSettings.fadeOut}
-            onChange={(event) => updateAudioSetting('fadeOut', Number(event.target.value))}
-            className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
-          />
-        </div>
-      </div>
-
-      <Button
-        size="sm"
-        onClick={handleVideoUpdate}
-        disabled={isUpdating}
-        className="gap-2 w-full"
-      >
-        {isUpdating && <Loader2 className="h-4 w-4 animate-spin" />}
-        {isUpdating ? 'Updating.' : 'Update Video'}
-      </Button>
-    </div>
-  );
-
-  const SegmentSettingsContent = selectedSegment ? (
-    <>
-      <div>
-        <div className="flex items-center gap-3">
-          <h4 className="text-2xl font-bold text-foreground">{selectedSegment.name}</h4>
-          {selectedSegment.loopIteration && selectedSegment.loopIteration > 1 && (
-            <span className="rounded-full border border-border/70 bg-background px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Loop {selectedSegment.loopIteration}
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground">Fine-tune duration and easing curve.</p>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="segment-duration">Duration (sec)</Label>
-        <div className="flex items-center gap-3">
-          <input
-            id="segment-duration"
-            type="range"
-            min={0.5}
-            max={6}
-            step={0.01}
-            value={selectedSegment.duration ?? 1.5}
-            onChange={(event) =>
-              onDurationChange(selectedSegment.id, Number(event.target.value), applyAll)
-            }
-            className="h-2 flex-1 cursor-pointer rounded-full bg-primary/30"
-          />
-          <input
-            type="number"
-            min={0.1}
-            step={0.01}
-            value={(selectedSegment.duration ?? 1.5).toFixed(2)}
-            onChange={(event) =>
-              onDurationChange(selectedSegment.id, Number(event.target.value), applyAll)
-            }
-            className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
-          />
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <Label>Ease Curve</Label>
-          <select
-            id="preset-select"
-            value={selectedSegment.easingPreset ?? ''}
-            onChange={(event) => onPresetChange(selectedSegment.id, event.target.value, applyAll)}
-            className="rounded-md border border-border bg-background py-2 pl-3 pr-8 text-sm"
-          >
-            {easingOptions.map((preset) => (
-              <option key={preset} value={preset}>
-                {preset}
-              </option>
-            ))}
-          </select>
-        </div>
-        <CubicBezierEditor
-          value={curveValue}
-          onChange={handleBezierChange}
-          onCommit={handleBezierCommit}
-        />
-        <p className="text-xs text-muted-foreground">
-          Drag the control points to sculpt a bespoke ease-in/ease-out profile for this segment.
-        </p>
-      </div>
-
-      <div className="space-y-2 pt-2">
-        <label className="flex items-center gap-2 text-sm text-foreground/90">
-          <input
-            type="checkbox"
-            checked={applyAll}
-            onChange={(event) => {
-              const nextValue = event.target.checked;
-              setApplyAll(nextValue);
-              if (nextValue && selectedSegment) {
-                onCloneSegmentSettings(selectedSegment.id);
-              }
-            }}
-            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-          />
-          Apply settings to all videos
-        </label>
-        <Button
-          size="sm"
-          onClick={handleVideoUpdate}
-          disabled={isUpdating}
-          className="gap-2 w-full mt-2"
-        >
-          {isUpdating && <Loader2 className="h-4 w-4 animate-spin" />}
-          {isUpdating ? 'Updating…' : 'Update Video'}
-        </Button>
-      </div>
-    </>
-  ) : (
-    <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
-      <p>Select a segment in the timeline to edit its timing and ease curve.</p>
     </div>
   );
 
@@ -530,6 +356,7 @@ function FinalVideoEditorComponent({
               createdAt={finalVideo.createdAt}
               actions={
                 <div className="flex flex-wrap items-center gap-2 md:gap-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <QualityRating segments={segments} />
                   <label className="flex items-center gap-1.5 md:gap-2">
                     <span>Loops</span>
                     <select
@@ -567,6 +394,7 @@ function FinalVideoEditorComponent({
               onSegmentSelect={handleSegmentSelect}
               zoomValue={timelineZoom}
               onZoomChange={setTimelineZoom}
+              onReorder={onReorder}
               renderAudioTrack={({ trackWidth, pixelsPerSecond, totalDuration }) => (
                 <div className="space-y-1">
                   {!waveformData ? (
@@ -600,35 +428,57 @@ function FinalVideoEditorComponent({
             onValueChange={(v) => setInspectorView(v as 'segments' | 'audio' | 'export')}
             className="flex flex-col h-full w-full"
           >
-              <TabsList className="grid w-full grid-cols-3 lg:hidden mb-4 bg-secondary/50 p-1 rounded-xl">
-                <TabsTrigger 
-                  value="segments" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
-                >
-                  Clip
-                </TabsTrigger>
-                <TabsTrigger 
-                  value="audio" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
-                >
-                  Audio
-                </TabsTrigger>
-                <TabsTrigger 
-                  value="export" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
-                >
-                  Export
-                </TabsTrigger>
-              </TabsList>
+            <TabsList className="grid w-full grid-cols-3 lg:hidden mb-4 bg-secondary/50 p-1 rounded-xl">
+              <TabsTrigger
+                value="segments"
+                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+              >
+                Clip
+              </TabsTrigger>
+              <TabsTrigger
+                value="audio"
+                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+              >
+                Audio
+              </TabsTrigger>
+              <TabsTrigger
+                value="export"
+                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+              >
+                Export
+              </TabsTrigger>
+            </TabsList>
 
             <div className="flex-1 overflow-y-auto min-h-[400px] lg:min-h-0">
               <TabsContent value="segments" className="mt-0 h-full space-y-4 data-[state=inactive]:hidden">
-                {SegmentSettingsContent}
+                <SegmentSettingsPanel
+                  selectedSegment={selectedSegment}
+                  easingOptions={easingOptions}
+                  applyAll={applyAll}
+                  onApplyAllChange={(checked) => {
+                    setApplyAll(checked);
+                    if (checked && selectedSegment) {
+                      onCloneSegmentSettings(selectedSegment.id);
+                    }
+                  }}
+                  onDurationChange={onDurationChange}
+                  onPresetChange={onPresetChange}
+                  onBezierChange={handleBezierChange}
+                  onBezierCommit={handleBezierCommit}
+                  curveValue={curveValue}
+                  onUpdateVideo={handleVideoUpdate}
+                  isUpdating={isUpdating}
+                />
               </TabsContent>
 
               <TabsContent value="audio" className="mt-0 h-full space-y-4 data-[state=inactive]:hidden">
                 {waveformData ? (
-                  AudioSettingsContent
+                  <AudioSettingsPanel
+                    audioSettings={audioSettings}
+                    onUpdateSetting={updateAudioSetting}
+                    onCommit={handleVideoUpdate}
+                    isUpdating={isUpdating}
+                  />
                 ) : (
                   <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
                     <p>Upload an audio track in the timeline to configure audio settings.</p>
@@ -652,23 +502,15 @@ function FinalVideoEditorComponent({
         </aside>
       </div>
 
-      <Dialog open={showUpdatePrompt} onOpenChange={handlePromptOpenChange}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{promptCopy.title}</DialogTitle>
-            <DialogDescription>{promptCopy.description}</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUpdatePromptReason(null)} disabled={isUpdating}>
-              Later
-            </Button>
-            <Button onClick={handleVideoUpdate} disabled={isUpdating} className="gap-2">
-              {isUpdating && <Loader2 className="h-4 w-4 animate-spin" />}
-              Update video
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <UpdatePromptDialog
+        open={showUpdatePrompt}
+        onOpenChange={handlePromptOpenChange}
+        title={promptCopy.title}
+        description={promptCopy.description}
+        onConfirm={handleVideoUpdate}
+        onCancel={() => setUpdatePromptReason(null)}
+        isUpdating={isUpdating}
+      />
     </>
   );
 }
