@@ -3,7 +3,7 @@
 I have modified Wullies code so its more robust now and more user friendly.
 The list of feature updates are down below the main one was warning users their aspcet ratio are wrong but we will process this anyway to give you an idea of what the finished product should look like if you fix it properly.
 
-Client-side video editor that stitches video segments into seamless loops with custom ease-in/out speed curves and background music. This is a weekend project and has plenty of issues, for best results use desktop chrome or firefox, there is a known issue on Android chrome where frames at the end of each clip are dropped. I am not planning to maintain this project long term. 
+
 
 ## Workflow
 
