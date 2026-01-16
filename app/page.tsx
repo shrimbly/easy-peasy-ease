@@ -33,6 +33,7 @@ type VideoMetadata = {
 
 const FOUR_K_WIDTH = 3840;
 const FOUR_K_HEIGHT = 2160;
+const BASELINE_PIXEL_LIMIT = 1920 * 1080; // Use Level 5.1 for resolutions above 1080p
 const MAX_TOTAL_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5GB
 
 interface PreflightWarning {
@@ -77,7 +78,7 @@ const readVideoMetadata = (file: File | Blob): Promise<VideoMetadata> =>
   });
 
 const getCodecStringForResolution = (width: number, height: number) =>
-  width >= FOUR_K_WIDTH || height >= FOUR_K_HEIGHT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
+  width * height > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
 
 const estimateBitrateForResolution = (width: number, height: number) => {
   const pixels = width * height;
