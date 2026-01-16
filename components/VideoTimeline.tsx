@@ -30,6 +30,7 @@ interface VideoTimelineProps {
   }) => ReactNode;
   zoomValue: number;
   onZoomChange: (value: number) => void;
+  onReorder?: (fromIndex: number, toIndex: number) => void;
 }
 
 interface ZoomSliderProps {
@@ -130,12 +131,18 @@ export function VideoTimeline({
   renderAudioTrack,
   zoomValue,
   onZoomChange,
+  onReorder,
 }: VideoTimelineProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [thumbnails, setThumbnails] = useState<Record<number, string>>({});
   const thumbnailCacheRef = useRef<Map<string, string>>(new Map());
   const [viewportWidth, setViewportWidth] = useState(0);
+
+  // Drag and drop state for reordering
+  const [draggingSegmentIndex, setDraggingSegmentIndex] = useState<number | null>(null);
+  const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
+  const [dropPosition, setDropPosition] = useState<'before' | 'after' | null>(null);
 
   const totalDuration = getTotalDuration(segments);
   const normalizedTime = totalDuration > 0 ? currentTime % totalDuration : currentTime;
@@ -149,8 +156,8 @@ export function VideoTimeline({
     totalDuration === 0
       ? TIMELINE_MIN_VISIBLE_SECONDS
       : zoomDisabled
-      ? totalDuration
-      : lerp(totalDuration, TIMELINE_MIN_VISIBLE_SECONDS, normalizedZoom);
+        ? totalDuration
+        : lerp(totalDuration, TIMELINE_MIN_VISIBLE_SECONDS, normalizedZoom);
 
   const pixelsPerSecond =
     safeViewportWidth > 0 && targetVisibleSeconds > 0
@@ -246,7 +253,7 @@ export function VideoTimeline({
   const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // Prevent default to stop scrolling/selection
     e.preventDefault();
-    
+
     if (!viewportRef.current) return;
 
     const rect = viewportRef.current.getBoundingClientRect();
@@ -256,7 +263,7 @@ export function VideoTimeline({
 
     onSeek(clampedTime);
     setIsDragging(true);
-    
+
     // Capture pointer to ensure we get move events even if we leave the element
     const target = e.target as HTMLElement;
     if (target.setPointerCapture) {
@@ -269,7 +276,7 @@ export function VideoTimeline({
     e.stopPropagation();
     e.preventDefault(); // Prevent touch scroll
     setIsDragging(true);
-    
+
     const target = e.target as HTMLElement;
     if (target.setPointerCapture) {
       target.setPointerCapture(e.pointerId);
@@ -336,13 +343,89 @@ export function VideoTimeline({
 
   const handleTimelineWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     const viewport = viewportRef.current;
-    if (!viewport || trackWidth <= safeViewportWidth) return;
-
-    const isVerticalDominant = Math.abs(event.deltaY) > Math.abs(event.deltaX);
-    if (!isVerticalDominant || event.deltaY === 0) return;
-
-    event.preventDefault();
+    if (!viewport) return;
+    event.preventDefault(); // Prevent page scrolling
     viewport.scrollLeft += event.deltaY;
+  };
+
+  // Reordering handlers
+  const handleSegmentDragStart = (index: number) => (e: React.DragEvent) => {
+    e.stopPropagation();
+    if (!onReorder) return;
+
+    setDraggingSegmentIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    // Transparent drag image if possible, or standard. 
+    // We rely on the indicator primarily.
+  };
+
+  const handleSegmentDragOver = (index: number) => (e: React.DragEvent) => {
+    if (draggingSegmentIndex === null || !onReorder) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (draggingSegmentIndex === index) {
+      setDropTargetIndex(null);
+      setDropPosition(null);
+      return;
+    }
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midX = rect.left + rect.width / 2;
+    const position = e.clientX < midX ? 'before' : 'after';
+
+
+    setDropTargetIndex(index);
+    setDropPosition(position);
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleSegmentDragLeave = () => {
+    // Basic debounce/check to avoid flickering when entering children
+    // but in this list case, standard logic usually suffices or checking relatedTarget
+  };
+
+  const handleSegmentDrop = (index: number) => (e: React.DragEvent) => {
+    if (draggingSegmentIndex === null || !onReorder || dropTargetIndex === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    let targetIndex = index;
+    if (dropPosition === 'after') {
+      targetIndex = index + 1; // Insert after this element
+    }
+
+    // Adjust logic: If we are dragging items later in the list to earlier positions or vice-versa
+    // Usually simple splice logic works best if we treat it as "move to index".
+    // However, since visual "after index 2" is technically index 3 slot.
+
+    // Let's simplify: pass current index and desired target index.
+    // If we drop 'after' index 5, we want to move to 6.
+    // But we need to account for the removed item shifting indices if necessary.
+    // The parent's `reorderTransitionVideos` function handles standard array splice: remove at `from`, insert at `to`.
+    // If `from` < `to`, shifting happens automatically during splice for passed indices? 
+    // Actually, `reorderTransitionVideos` implementation:
+    // const [moved] = updated.splice(fromIndex, 1);
+    // updated.splice(toIndex, 0, moved);
+
+    // If I drag idx 0 to "after" idx 1.
+    // splice(0, 1) removes 0. Array is [1, 2...].
+    // splice(2, 0, moved) -> [1, 2, 0...]. Wait.
+    // If target is "after 1", the visual new index is 2.
+    // But since 0 is removed, 1 becomes 0. 
+
+    // Let's rely on standard logic: normalized "toIndex".
+    onReorder(draggingSegmentIndex, targetIndex);
+
+    setDraggingSegmentIndex(null);
+    setDropTargetIndex(null);
+    setDropPosition(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggingSegmentIndex(null);
+    setDropTargetIndex(null);
+    setDropPosition(null);
   };
 
   return (
@@ -387,19 +470,33 @@ export function VideoTimeline({
                   return (
                     <div
                       key={boundary.segment.id}
+                      onDragOver={handleSegmentDragOver(boundary.index)}
+                      onDragLeave={handleSegmentDragLeave}
+                      onDrop={handleSegmentDrop(boundary.index)}
                       className={cn(
-                        'relative h-full flex-none border-r border-border/50 transition-all',
+                        'relative h-full flex-none border-r border-border/50 transition-all group',
                         isSelected && 'ring-2 ring-primary ring-inset',
-                        isPlaying && 'bg-primary/10'
+                        isPlaying && 'bg-primary/10',
+                        // Visual styles for drag target
+                        dropTargetIndex === boundary.index && dropPosition === 'before' && 'border-l-4 border-l-primary z-20',
+                        dropTargetIndex === boundary.index && dropPosition === 'after' && 'border-r-4 border-r-primary z-20',
+                        draggingSegmentIndex === boundary.index && 'opacity-50'
                       )}
                       style={{ width: `${Math.max(segmentWidth, 0)}px` }}
                       onClick={(e) => {
                         e.stopPropagation();
                         onSegmentSelect(boundary.segment.id);
                         // Also seek to start of segment to prevent playback loop from resetting selection
-                        onSeek(boundary.startTime); 
+                        onSeek(boundary.startTime);
                       }}
                     >
+                      {/* Drop Indicators (backup to border) */}
+                      {dropTargetIndex === boundary.index && dropPosition === 'before' && (
+                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary z-30" />
+                      )}
+                      {dropTargetIndex === boundary.index && dropPosition === 'after' && (
+                        <div className="absolute right-0 top-0 bottom-0 w-1 bg-primary z-30" />
+                      )}
                       {/* Thumbnail */}
                       {thumbnails[boundary.segment.id] && (
                         <img
@@ -410,22 +507,35 @@ export function VideoTimeline({
                       )}
 
                       {/* Overlay gradient for text readability */}
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
 
-                      {/* Segment Name */}
-                      <div className="absolute bottom-0 left-0 right-0 p-1 md:p-2">
+                      {/* Segment Name - Moved up slightly to make room for handle */}
+                      <div className="absolute bottom-3 left-0 right-0 p-1 md:p-2 pointer-events-none">
                         <p className="text-[10px] md:text-xs font-medium text-white truncate">
                           {boundary.segment.loopIteration && boundary.segment.loopIteration > 1
                             ? `${boundary.segment.name} • Loop ${boundary.segment.loopIteration}`
                             : boundary.segment.name}
                         </p>
                       </div>
+
+                      {/* Drag Handle */}
+                      <div
+                        draggable={!!onReorder}
+                        onDragStart={handleSegmentDragStart(boundary.index)}
+                        onDragEnd={handleDragEnd}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="absolute bottom-0 left-0 right-0 h-5 cursor-grab active:cursor-grabbing z-50 flex items-center justify-center transition-colors shadow-sm border-t border-white/20"
+                        style={{ backgroundColor: '#10b981' }} // Emerald-500 equivalent
+                        title="Drag to reorder"
+                      >
+                        <span className="text-[9px] font-bold text-white uppercase tracking-wider drop-shadow-md select-none mr-1">DRAG</span>
+                        <div className="w-8 h-1 bg-white/60 rounded-full backdrop-blur-sm" />
+                      </div>
                     </div>
                   );
                 })}
               </div>
 
-              {/* Playhead */}
               <div
                 className="pointer-events-none absolute top-0 bottom-0 z-10 w-0.5 bg-primary"
                 style={{ left: `${playheadPosition}px` }}

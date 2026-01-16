@@ -28,6 +28,8 @@ export const EASING_PRESETS: EasingPresetName[] = [
   'easeInOutSine',
 ];
 
+export const DEFAULT_EASING: EasingPresetName = 'easeInOutExpo';
+
 export function getPresetBezier(preset?: string | null): [number, number, number, number] {
   const handles = preset ? PRESET_BEZIERS[preset as EasingPresetName] : null;
   const source = handles ?? DEFAULT_CUSTOM_BEZIER;

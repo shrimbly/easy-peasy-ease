@@ -27,6 +27,8 @@ export const createAvcEncodingConfig = (
   framerate?: number
 ): VideoEncodingConfig => ({
   codec: 'avc',
+  // Use 'contain' to resize/pad frames to match the target resolution, avoiding "sample size must remain constant" errors
+  sizeChangeBehavior: 'contain',
   bitrate,
   keyFrameInterval: DEFAULT_KEYFRAME_INTERVAL,
   bitrateMode: 'variable',
