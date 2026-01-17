@@ -924,7 +924,7 @@ export default function Home() {
                     <p className="max-w-lg text-base sm:text-lg text-muted-foreground">
                       Free tool to stitch and apply ease curves to short videos.
                     </p>
-                    <p className="text-xs text-muted-foreground/50">v0.1.2</p>
+                    <p className="text-xs text-muted-foreground/50">v0.1.3</p>
                   </div>
                 )}
               </div>
