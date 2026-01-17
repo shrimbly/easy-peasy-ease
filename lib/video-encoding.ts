@@ -16,7 +16,8 @@ export const createAvcEncodingConfig = (
   width?: number,
   height?: number,
   codecString: string = AVC_LEVEL_4_0,
-  framerate?: number
+  framerate?: number,
+  useHardwareAcceleration: boolean = true
 ): VideoEncodingConfig => ({
   codec: 'avc',
   bitrate,
@@ -24,6 +25,7 @@ export const createAvcEncodingConfig = (
   bitrateMode: 'variable',
   latencyMode: 'quality',
   fullCodecString: codecString,
+  hardwareAcceleration: useHardwareAcceleration ? 'prefer-hardware' : 'prefer-software',
   onEncoderConfig: (config) => {
     config.avc = { ...(config.avc ?? {}), format: 'avc' };
     if (!config.latencyMode) {
