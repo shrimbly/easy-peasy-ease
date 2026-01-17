@@ -183,7 +183,6 @@ const TextPressure = ({
       )}
       style={{
         fontFamily,
-        fontSize: `${minFontSize}px`,
         color: textColor,
         lineHeight: "1.2",
         letterSpacing: "-0.02em",

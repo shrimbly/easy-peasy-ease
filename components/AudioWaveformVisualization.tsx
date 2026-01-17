@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, type KeyboardEvent } from 'react';
+import { type KeyboardEvent, useState, useRef, useEffect, useCallback } from 'react';
 import { WaveformData } from '@/hooks/useAudioVisualization';
 import { Button } from '@/components/ui/button';
 import { Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { AudioScrubber } from '@/components/ui/waveform';
 
 interface AudioWaveformVisualizationProps {
   waveformData: WaveformData | null;
@@ -17,6 +18,9 @@ interface AudioWaveformVisualizationProps {
   isSelected?: boolean;
   trackWidth: number;
   pixelsPerSecond: number;
+  offset?: number;
+  onOffsetChange?: (offset: number) => void;
+  onOffsetCommit?: () => void;
 }
 
 export function AudioWaveformVisualization({
@@ -30,90 +34,98 @@ export function AudioWaveformVisualization({
   isSelected = false,
   trackWidth,
   pixelsPerSecond,
+  offset = 0,
+  onOffsetChange,
+  onOffsetCommit,
 }: AudioWaveformVisualizationProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [localOffset, setLocalOffset] = useState<number | null>(null);
+  const dragStartXRef = useRef(0);
+  const dragStartOffsetRef = useRef(0);
+  const pixelsPerSecondRef = useRef(pixelsPerSecond);
+  const onOffsetChangeRef = useRef(onOffsetChange);
+  const onOffsetCommitRef = useRef(onOffsetCommit);
+  const localOffsetRef = useRef<number | null>(null);
+
+  // Use local offset during drag, otherwise use prop
+  const effectiveOffset = localOffset ?? offset;
+
+  // Keep refs updated
+  useEffect(() => {
+    pixelsPerSecondRef.current = pixelsPerSecond;
+  }, [pixelsPerSecond]);
 
   useEffect(() => {
-    if (!canvasRef.current || !waveformData) {
-      return;
-    }
+    onOffsetChangeRef.current = onOffsetChange;
+  }, [onOffsetChange]);
 
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  useEffect(() => {
+    onOffsetCommitRef.current = onOffsetCommit;
+  }, [onOffsetCommit]);
 
-    // Set canvas size
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * window.devicePixelRatio;
-    canvas.height = rect.height * window.devicePixelRatio;
-    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  useEffect(() => {
+    localOffsetRef.current = localOffset;
+  }, [localOffset]);
 
-    // Get theme color (primary color from CSS variable)
-    const primaryColor = getComputedStyle(document.documentElement)
-      .getPropertyValue('--primary')
-      .trim() || 'hsl(262.1 83.3% 57.8%)';
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (!onOffsetChangeRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
 
-    const width = rect.width;
-    const height = rect.height;
+    // Capture pointer for reliable drag tracking
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
 
-    // Clear canvas with transparent background
-    ctx.clearRect(0, 0, width, height);
+    setIsDragging(true);
+    dragStartXRef.current = e.clientX;
+    dragStartOffsetRef.current = offset;
+    pixelsPerSecondRef.current = pixelsPerSecond;
+    setLocalOffset(offset); // Initialize local offset
+  }, [offset, pixelsPerSecond]);
 
-    const audioDuration = waveformData.duration ?? 0;
-    const visibleAudioDuration =
-      timelineDuration > 0 && audioDuration > 0
-        ? Math.min(audioDuration, timelineDuration)
-        : audioDuration;
+  useEffect(() => {
+    if (!isDragging) return;
 
-    const safePixelsPerSecond =
-      pixelsPerSecond > 0
-        ? pixelsPerSecond
-        : visibleAudioDuration > 0
-        ? width / visibleAudioDuration
-        : width;
-    const visibleWaveformWidth = Math.min(
-      width,
-      Math.max(visibleAudioDuration * safePixelsPerSecond, 0)
-    );
+    const handlePointerMove = (e: PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const deltaX = e.clientX - dragStartXRef.current;
+      const pps = pixelsPerSecondRef.current;
+      if (pps <= 0) return;
+      const deltaSeconds = deltaX / pps;
+      const rawOffset = dragStartOffsetRef.current + deltaSeconds;
+      // Snap to 0.01 second increments for fine control
+      const newOffset = Math.round(rawOffset * 100) / 100;
+      setLocalOffset(newOffset); // Update local state only during drag
+    };
 
-    const peaks = waveformData.peaks;
-    const visibleRatio =
-      audioDuration > 0 ? Math.min(1, visibleAudioDuration / audioDuration) : 1;
-    const visiblePeakCount = Math.max(
-      1,
-      Math.round(peaks.length * visibleRatio)
-    );
-    const barWidth =
-      visiblePeakCount > 0 ? visibleWaveformWidth / visiblePeakCount : 0;
+    const handlePointerUp = () => {
+      setIsDragging(false);
+      const finalOffset = localOffsetRef.current;
+      if (finalOffset !== null && finalOffset !== dragStartOffsetRef.current) {
+        onOffsetChangeRef.current?.(finalOffset); // Commit final value to parent
+        onOffsetCommitRef.current?.();
+      }
+      setLocalOffset(null); // Clear local state
+    };
 
-    ctx.fillStyle = primaryColor;
+    window.addEventListener('pointermove', handlePointerMove, { capture: true });
+    window.addEventListener('pointerup', handlePointerUp, { capture: true });
+    window.addEventListener('pointercancel', handlePointerUp, { capture: true });
 
-    for (let i = 0; i < visiblePeakCount; i++) {
-      const peak = peaks[i] ?? 0;
-      const barHeight = (peak * height) / 2;
-      const x = i * Math.max(barWidth, 0);
-      const y = height / 2 - barHeight / 2;
-
-      ctx.fillRect(x, y, Math.max(1, Math.max(barWidth, 0) - 1), barHeight);
-    }
-
-    // Draw playback position indicator
-    if (timelineDuration > 0 && currentTime >= 0) {
-      const progressX = Math.min((currentTime / timelineDuration) * width, width);
-      ctx.strokeStyle = primaryColor;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(progressX, 0);
-      ctx.lineTo(progressX, height);
-      ctx.stroke();
-    }
-  }, [waveformData, currentTime, timelineDuration, trackWidth, pixelsPerSecond]);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove, { capture: true });
+      window.removeEventListener('pointerup', handlePointerUp, { capture: true });
+      window.removeEventListener('pointercancel', handlePointerUp, { capture: true });
+    };
+  }, [isDragging]);
 
   if (!waveformData) {
     return null;
   }
 
   const handleSelect = () => {
+    if (isDragging) return;
     onSelect?.();
   };
 
@@ -126,12 +138,39 @@ export function AudioWaveformVisualization({
   };
 
   const audioDurationSeconds = waveformData.duration ?? 0;
-  const visibleAudioDuration = Math.min(
-    audioDurationSeconds,
-    timelineDuration > 0 ? timelineDuration : audioDurationSeconds
-  );
-  const hasOverflow =
-    timelineDuration > 0 && audioDurationSeconds > timelineDuration;
+  const totalPeaks = waveformData.peaks.length;
+
+  // Calculate which portion of the audio maps to the visible timeline
+  // effectiveOffset > 0: audio is delayed (silence at start, audio starts later)
+  // effectiveOffset < 0: audio is trimmed (skip beginning of audio)
+
+  // The audio source time that maps to video time 0
+  const audioStartTime = -effectiveOffset; // If offset is +2s, audio at 0s maps to video 2s, so video 0s has no audio
+                                            // If offset is -2s, audio at 2s maps to video 0s
+
+  // The audio source time that maps to the end of the timeline
+  const audioEndTime = audioStartTime + timelineDuration;
+
+  // Convert to peak indices
+  const peaksPerSecond = audioDurationSeconds > 0 ? totalPeaks / audioDurationSeconds : 0;
+
+  // Calculate start and end peak indices for what's visible on the timeline
+  const startPeakIndex = Math.max(0, Math.floor(audioStartTime * peaksPerSecond));
+  const endPeakIndex = Math.min(totalPeaks, Math.ceil(audioEndTime * peaksPerSecond));
+
+  // Extract the visible peaks
+  const visiblePeaks = waveformData.peaks.slice(startPeakIndex, endPeakIndex);
+
+  // Calculate padding at the start if offset > 0 (delay - silence at beginning)
+  // This is the portion of the timeline before audio starts
+  const silenceAtStart = Math.max(0, effectiveOffset);
+  const silenceWidthPixels = silenceAtStart * pixelsPerSecond;
+
+  // Calculate the width of the actual waveform
+  const waveformWidthPixels = Math.max(0, trackWidth - silenceWidthPixels);
+
+  // Check if there's more audio beyond what's visible
+  const hasMoreAudioAtEnd = audioEndTime < audioDurationSeconds;
 
   return (
     <div
@@ -143,9 +182,12 @@ export function AudioWaveformVisualization({
         tabIndex={onSelect ? 0 : undefined}
         onClick={handleSelect}
         onKeyDown={handleKeyDown}
+        onPointerDown={handlePointerDown}
         className={cn(
           'relative rounded-lg border border-border bg-secondary/20 overflow-hidden transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-          onSelect && 'cursor-pointer',
+          onSelect && !onOffsetChange && 'cursor-pointer',
+          onOffsetChange && !isDragging && 'cursor-grab',
+          isDragging && 'cursor-grabbing',
           isSelected && 'border-primary ring-2 ring-primary shadow-lg'
         )}
         aria-pressed={isSelected}
@@ -155,7 +197,7 @@ export function AudioWaveformVisualization({
             type="button"
             variant="ghost"
             size="icon"
-            className="absolute right-2 top-2 text-muted-foreground hover:text-foreground hover:bg-secondary/80"
+            className="absolute right-2 top-2 z-10 text-muted-foreground hover:text-foreground hover:bg-secondary/80"
             onClick={(event) => {
               event.stopPropagation();
               onRemove();
@@ -165,12 +207,34 @@ export function AudioWaveformVisualization({
             <Trash2 className="h-4 w-4" />
           </Button>
         )}
-        <canvas
-          ref={canvasRef}
-          className="h-[96px] w-full bg-secondary/50"
-          aria-label={`${fileName} waveform`}
-        />
-        {hasOverflow && (
+        <div className="flex h-[96px]">
+          {/* Silence/gap at the start when offset > 0 */}
+          {silenceWidthPixels > 0 && (
+            <div
+              className="shrink-0 bg-secondary/30"
+              style={{ width: `${silenceWidthPixels}px` }}
+            />
+          )}
+          {/* The actual waveform */}
+          {waveformWidthPixels > 0 && visiblePeaks.length > 0 && (
+            <div style={{ width: `${waveformWidthPixels}px` }} className="shrink-0">
+              <AudioScrubber
+                data={visiblePeaks}
+                currentTime={Math.max(0, currentTime - silenceAtStart)}
+                duration={Math.max(0, timelineDuration - silenceAtStart)}
+                height={96}
+                barWidth={3}
+                barGap={1}
+                barRadius={2}
+                showHandle={false}
+                fadeEdges={false}
+                className="bg-secondary/50 [--foreground:oklch(0.951_0.121_125.737)]"
+                aria-label={`${fileName} waveform`}
+              />
+            </div>
+          )}
+        </div>
+        {hasMoreAudioAtEnd && (
           <div className="pointer-events-none absolute inset-y-0 right-0 flex w-24 items-center justify-end bg-gradient-to-l from-background/90 via-background/10 to-transparent pr-3">
             <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-background">
               More audio

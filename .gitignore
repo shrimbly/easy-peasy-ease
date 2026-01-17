@@ -47,11 +47,9 @@ CLAUDE.md
 /.agents*
 
 #docs
-/docs/*
 docs/PRD-and-implementation-plan.md
 docs/qwen-docs.md
 docs/kling-docs.md
-docs/mediabunny.md
 docs/seedream-lite.md
 fix-attempts.md
 
