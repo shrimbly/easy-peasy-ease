@@ -284,8 +284,8 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
           updateProgress('processing', 'Detecting supported audio codec...', 8);
 
           // Detect the best supported audio codec for MP4
-          // Try common codecs in order of preference: aac, opus, mp3
-          const audioCodec = await getFirstEncodableAudioCodec(['aac', 'opus', 'mp3'], {
+          // Try common codecs in order of preference: aac, mp3 (no opus - Twitter doesn't support it)
+          const audioCodec = await getFirstEncodableAudioCodec(['aac', 'mp3'], {
             numberOfChannels: audioData.buffer.numberOfChannels,
             sampleRate: audioData.buffer.sampleRate,
             bitrate: 128000,

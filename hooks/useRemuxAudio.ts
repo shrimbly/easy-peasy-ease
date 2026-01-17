@@ -216,7 +216,7 @@ export const useRemuxAudio = (): UseRemuxAudioReturn => {
         const videoSource = new EncodedVideoPacketSource(videoCodec);
 
         // Detect best audio codec
-        const audioCodec = await getFirstEncodableAudioCodec(['aac', 'opus', 'mp3'], {
+        const audioCodec = await getFirstEncodableAudioCodec(['aac', 'mp3'], {
           numberOfChannels: channels,
           sampleRate,
           bitrate: 128000,
