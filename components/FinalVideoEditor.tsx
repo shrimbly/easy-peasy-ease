@@ -308,7 +308,7 @@ function FinalVideoEditorComponent({
     ? 'Rendering Full Quality...'
     : isPreviewRender
     ? 'Download (Render Full Quality)'
-    : 'Download';
+    : 'Download (full quality)';
 
   const ExportButtons = (
     <div className="flex gap-2">
