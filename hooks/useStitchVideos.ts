@@ -15,7 +15,8 @@ import {
   canEncodeVideo,
 } from 'mediabunny';
 import type { Rotation } from 'mediabunny';
-import { DEFAULT_BITRATE, MAX_OUTPUT_FPS } from '@/lib/speed-curve-config';
+import type { RenderQuality } from '@/lib/types';
+import { DEFAULT_BITRATE, MAX_OUTPUT_FPS, PREVIEW_FPS, PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_BITRATE } from '@/lib/speed-curve-config';
 import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 
 const FALLBACK_WIDTH = 1920;
@@ -141,7 +142,8 @@ interface UseStitchVideosReturn {
     videoBlobs: Blob[],
     onProgress?: (progress: StitchProgress) => void,
     bitrate?: number,
-    audioData?: AudioData
+    audioData?: AudioData,
+    quality?: RenderQuality
   ) => Promise<Blob | null>;
   progress: StitchProgress;
   reset: () => void;
@@ -163,8 +165,10 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
       videoBlobs: Blob[],
       onProgress?: (progress: StitchProgress) => void,
       bitrate: number = DEFAULT_BITRATE,
-      audioData?: AudioData
+      audioData?: AudioData,
+      quality: RenderQuality = 'full'
     ): Promise<Blob | null> => {
+      const isPreview = quality === 'preview';
       try {
         // Reset progress
         const initialProgress: StitchProgress = {
@@ -205,18 +209,34 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
           rotation: aggregateRotation,
           maxSourceBitrate,
         } = await determineEncodeParameters(videoBlobs);
-        const safeWidth = probedWidth > 0 ? probedWidth : FALLBACK_WIDTH;
-        const safeHeight = probedHeight > 0 ? probedHeight : FALLBACK_HEIGHT;
-        const codecProfile =
-          safeWidth * safeHeight > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
-        // Use the highest of: passed bitrate, default bitrate, or max source bitrate
-        // Ensure it's a positive integer (required by encoder)
+
+        // Apply preview constraints if in preview mode
+        let safeWidth = probedWidth > 0 ? probedWidth : FALLBACK_WIDTH;
+        let safeHeight = probedHeight > 0 ? probedHeight : FALLBACK_HEIGHT;
+
+        if (isPreview) {
+          // Scale down to 720p max while maintaining aspect ratio
+          if (safeWidth > PREVIEW_MAX_WIDTH || safeHeight > PREVIEW_MAX_HEIGHT) {
+            const scale = Math.min(PREVIEW_MAX_WIDTH / safeWidth, PREVIEW_MAX_HEIGHT / safeHeight);
+            safeWidth = ensureEvenDimension(Math.round(safeWidth * scale));
+            safeHeight = ensureEvenDimension(Math.round(safeHeight * scale));
+          }
+        }
+
+        const codecProfile = isPreview
+          ? 'avc1.42001f' // Level 3.1 for preview
+          : safeWidth * safeHeight > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
+
+        // For full quality: use highest of passed/default/source bitrate
+        // For preview: cap at PREVIEW_BITRATE
         const candidateBitrate = Math.max(
           Number.isFinite(bitrate) && bitrate > 0 ? bitrate : 0,
           DEFAULT_BITRATE,
           Number.isFinite(maxSourceBitrate) && maxSourceBitrate > 0 ? maxSourceBitrate : 0
         );
-        const resolvedBitrate = Math.max(1, Math.floor(candidateBitrate));
+        const resolvedBitrate = isPreview
+          ? Math.min(Math.max(1, Math.floor(candidateBitrate)), PREVIEW_BITRATE)
+          : Math.max(1, Math.floor(candidateBitrate));
 
         const supportsConfig = await canEncodeVideo('avc', {
           width: safeWidth,
@@ -254,7 +274,8 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
           target: bufferTarget,
         });
 
-        output.addVideoTrack(videoSource, { rotation: aggregateRotation, frameRate: MAX_OUTPUT_FPS });
+        const outputFps = isPreview ? PREVIEW_FPS : MAX_OUTPUT_FPS;
+        output.addVideoTrack(videoSource, { rotation: aggregateRotation, frameRate: outputFps });
 
         // Add audio track if provided
         let audioSource: AudioBufferSource | undefined;
@@ -263,8 +284,8 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
           updateProgress('processing', 'Detecting supported audio codec...', 8);
 
           // Detect the best supported audio codec for MP4
-          // Try common codecs in order of preference: aac, opus, mp3
-          const audioCodec = await getFirstEncodableAudioCodec(['aac', 'opus', 'mp3'], {
+          // Try common codecs in order of preference: aac, mp3 (no opus - Twitter doesn't support it)
+          const audioCodec = await getFirstEncodableAudioCodec(['aac', 'mp3'], {
             numberOfChannels: audioData.buffer.numberOfChannels,
             sampleRate: audioData.buffer.sampleRate,
             bitrate: 128000,
@@ -290,7 +311,7 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
 
         // Track the highest timestamp we've written to ensure monotonicity
         // Start at -frameInterval so first frame can be at timestamp 0
-        const frameInterval = 1 / MAX_OUTPUT_FPS;
+        const frameInterval = 1 / outputFps;
         let highestWrittenTimestamp = -frameInterval;
 
         // Process each video blob

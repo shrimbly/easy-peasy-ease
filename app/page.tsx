@@ -16,6 +16,7 @@ import {
   SpeedCurvedBlobCache,
   UpdateReason,
   FinalizeContext,
+  RenderQuality,
 } from '@/lib/types';
 import TextPressure from '@/components/text/text-pressure';
 import { canEncodeVideo, getEncodableVideoCodecs } from 'mediabunny';
@@ -41,6 +42,7 @@ type VideoMetadata = {
 
 const FOUR_K_WIDTH = 3840;
 const FOUR_K_HEIGHT = 2160;
+const BASELINE_PIXEL_LIMIT = 1920 * 1080; // Use Level 5.1 for resolutions above 1080p
 const MAX_TOTAL_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5GB
 
 interface PreflightWarning {
@@ -85,7 +87,7 @@ const readVideoMetadata = (file: File | Blob): Promise<VideoMetadata> =>
   });
 
 const getCodecStringForResolution = (width: number, height: number) =>
-  width >= FOUR_K_WIDTH || height >= FOUR_K_HEIGHT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
+  width * height > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
 
 const estimateBitrateForResolution = (width: number, height: number) => {
   const pixels = width * height;
@@ -200,6 +202,8 @@ export default function Home() {
   const [isSupported, setIsSupported] = useState(true);
   const [preflightWarnings, setPreflightWarnings] = useState<PreflightWarning[]>([]);
   const [showPreflightDialog, setShowPreflightDialog] = useState(false);
+  const [renderQuality, setRenderQuality] = useState<RenderQuality>('preview');
+  const [currentRenderQuality, setCurrentRenderQuality] = useState<RenderQuality | null>(null);
   const transitionVideosRef = useRef<TransitionVideo[]>([]);
 
   // Cache for speed-curved blobs to enable fast audio-only updates
@@ -506,7 +510,7 @@ export default function Home() {
     );
   };
 
-  const handleReapplyFinalVideo = async (options?: AudioFinalizeOptions) => {
+  const handleReapplyFinalVideo = async (options?: AudioFinalizeOptions & { quality?: RenderQuality }) => {
     // Determine update reason based on what changed
     let reason: UpdateReason = 'full';
 
@@ -540,7 +544,7 @@ export default function Home() {
       prevAudioSettingsRef.current = options.audioSettings;
     }
 
-    await handleFinalizeVideo(undefined, options, true, reason);
+    await handleFinalizeVideo(undefined, options, true, options?.quality, reason);
   };
 
   const runPreflightChecks = (segments: TransitionVideo[]): PreflightWarning[] => {
@@ -613,9 +617,11 @@ export default function Home() {
     segmentsOverride?: TransitionVideo[],
     options?: AudioFinalizeOptions,
     skipPreflight: boolean = false,
+    qualityOverride?: RenderQuality,
     updateReason: UpdateReason = 'full'
   ) => {
     const baseSegments = segmentsOverride ?? transitionVideos;
+    const effectiveQuality = qualityOverride ?? renderQuality;
 
     if (!skipPreflight) {
       const warnings = runPreflightChecks(baseSegments);
@@ -629,7 +635,7 @@ export default function Home() {
     try {
       setIsFinalizingVideo(true);
       setFinalizationProgress(0);
-      setFinalizationMessage('Initializing...');
+      setFinalizationMessage(effectiveQuality === 'preview' ? 'Initializing preview render...' : 'Initializing...');
 
       const segmentsToFinalize = syncSegmentsToLoopCount(baseSegments, loopCount);
 
@@ -640,6 +646,7 @@ export default function Home() {
         previousFinalVideo: finalVideo?.blob,
         audioBlob: options?.audioBlob,
         audioSettings: options?.audioSettings,
+        quality: effectiveQuality,
       };
 
       const result = await finalizeVideos(
@@ -673,8 +680,9 @@ export default function Home() {
         size: result.finalBlob.size,
         createdAt: new Date(),
       });
+      setCurrentRenderQuality(effectiveQuality);
 
-      setFinalizationMessage('Video finalized successfully!');
+      setFinalizationMessage(effectiveQuality === 'preview' ? 'Preview ready!' : 'Video finalized successfully!');
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       console.error('Error finalizing video:', error);
@@ -816,6 +824,7 @@ export default function Home() {
                 setUploadedVideos([]);
                 setSelectedSegmentId(null);
                 setLoopCount(1);
+                setCurrentRenderQuality(null);
                 // Clear cache when exiting
                 setSpeedCurveCache(null);
                 prevAudioBlobRef.current = null;
@@ -824,6 +833,9 @@ export default function Home() {
               onDownload={handleDownloadFinalVideo}
               loopCount={loopCount}
               onLoopCountChange={handleLoopCountChange}
+              renderQuality={renderQuality}
+              onRenderQualityChange={setRenderQuality}
+              currentRenderQuality={currentRenderQuality}
             />
 
             <Dialog open={showPreflightDialog} onOpenChange={setShowPreflightDialog}>
@@ -1132,7 +1144,16 @@ export default function Home() {
                   {/* Finalize Button for Uploaded Videos */}
                   {transitionVideos.every((v) => v.url && !v.loading) && !isFinalizingVideo && (
                     <div className="space-y-3">
-                      <div className="flex justify-center">
+                      <div className="flex flex-col items-center gap-3">
+                        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            checked={renderQuality === 'preview'}
+                            onChange={(e) => setRenderQuality(e.target.checked ? 'preview' : 'full')}
+                            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                          />
+                          Render previews in lower quality (faster)
+                        </label>
                         <Button
                           size="lg"
                           onClick={() => handleFinalizeVideo()}

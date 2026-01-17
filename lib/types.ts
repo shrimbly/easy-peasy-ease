@@ -2,6 +2,8 @@
  * Shared TypeScript types for the application
  */
 
+export type RenderQuality = 'preview' | 'full';
+
 export type VideoEncodeCapabilityStatus =
   | 'pending'
   | 'checking'
@@ -84,6 +86,7 @@ export interface FinalizeContext {
   previousFinalVideo?: Blob;
   audioBlob?: Blob;
   audioSettings?: AudioProcessingOptions;
+  quality?: RenderQuality;
 }
 
 /**

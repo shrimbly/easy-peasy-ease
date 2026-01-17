@@ -1,7 +1,7 @@
 'use client';
 
 import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FinalVideo, TransitionVideo, AudioProcessingOptions, UpdateReason } from '@/lib/types';
+import { FinalVideo, TransitionVideo, AudioProcessingOptions, RenderQuality, UpdateReason } from '@/lib/types';
 import { Label } from '@/components/ui/label';
 import { CubicBezierEditor } from '@/components/CubicBezierEditor';
 import { Button } from '@/components/ui/button';
@@ -42,12 +42,15 @@ interface FinalVideoEditorProps {
   onBezierChange: (id: number, bezier: [number, number, number, number], applyAll?: boolean) => void;
   defaultBezier: [number, number, number, number];
   onCloneSegmentSettings: (id: number) => void;
-  onUpdateVideo: (options?: { audioBlob?: Blob; audioSettings?: AudioProcessingOptions; updateHint?: UpdateReason }) => void;
+  onUpdateVideo: (options?: { audioBlob?: Blob; audioSettings?: AudioProcessingOptions; quality?: RenderQuality; updateHint?: UpdateReason }) => void;
   isUpdating: boolean;
   onExit: () => void;
   onDownload: () => void;
   loopCount: number;
   onLoopCountChange: (next: number) => void;
+  renderQuality: RenderQuality;
+  onRenderQualityChange: (quality: RenderQuality) => void;
+  currentRenderQuality: RenderQuality | null;
 }
 
 export const FinalVideoEditor = memo(FinalVideoEditorComponent);
@@ -69,6 +72,9 @@ function FinalVideoEditorComponent({
   onDownload,
   loopCount,
   onLoopCountChange,
+  renderQuality,
+  onRenderQualityChange,
+  currentRenderQuality,
 }: FinalVideoEditorProps) {
   const selectedSegment = useMemo(
     () => segments.find((segment) => segment.id === selectedSegmentId) ?? null,
@@ -83,6 +89,7 @@ function FinalVideoEditorComponent({
     offset: 0,
   });
   const [updatePromptReason, setUpdatePromptReason] = useState<'loop' | 'audio' | null>(null);
+  const [pendingFullQualityDownload, setPendingFullQualityDownload] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(0);
 
   // Refs for tracking what changed to determine update path
@@ -259,7 +266,7 @@ function FinalVideoEditorComponent({
     [loopCount, onLoopCountChange]
   );
 
-  const handleVideoUpdate = () => {
+  const handleVideoUpdate = (qualityOverride?: RenderQuality) => {
     // Determine update hint based on what changed
     let updateHint: UpdateReason | undefined;
 
@@ -291,10 +298,33 @@ function FinalVideoEditorComponent({
     onUpdateVideo({
       audioBlob: audioFile ?? undefined,
       audioSettings,
+      quality: qualityOverride ?? renderQuality,
       updateHint,
     });
     setUpdatePromptReason(null);
   };
+
+  const handleDownload = useCallback(() => {
+    // If current render is preview, we need to re-render at full quality first
+    if (currentRenderQuality === 'preview') {
+      setPendingFullQualityDownload(true);
+      onUpdateVideo({
+        audioBlob: audioFile ?? undefined,
+        audioSettings,
+        quality: 'full',
+      });
+    } else {
+      onDownload();
+    }
+  }, [currentRenderQuality, audioFile, audioSettings, onUpdateVideo, onDownload]);
+
+  // Trigger download when full quality render completes
+  useEffect(() => {
+    if (pendingFullQualityDownload && !isUpdating && currentRenderQuality === 'full') {
+      setPendingFullQualityDownload(false);
+      onDownload();
+    }
+  }, [pendingFullQualityDownload, isUpdating, currentRenderQuality, onDownload]);
 
   const handlePromptOpenChange = (open: boolean) => {
     if (!open) {
@@ -320,14 +350,25 @@ function FinalVideoEditorComponent({
         };
 
   // Render Components
+  const isPreviewRender = currentRenderQuality === 'preview';
+  const downloadButtonLabel = pendingFullQualityDownload
+    ? 'Rendering Full Quality...'
+    : isPreviewRender
+    ? 'Download (Render Full Quality)'
+    : 'Download (full quality)';
+
   const ExportButtons = (
     <div className="flex gap-2">
-      <Button onClick={onExit} variant="outline" className="flex-1">
+      <Button onClick={onExit} variant="outline" className="flex-1" disabled={isUpdating}>
         Exit
       </Button>
-      <Button onClick={onDownload} className="flex-1 gap-2">
-        <Play className="h-4 w-4" />
-        Download
+      <Button onClick={handleDownload} className="flex-1 gap-2" disabled={isUpdating}>
+        {isUpdating && pendingFullQualityDownload ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Play className="h-4 w-4" />
+        )}
+        {downloadButtonLabel}
       </Button>
     </div>
   );
@@ -391,9 +432,23 @@ function FinalVideoEditorComponent({
         </div>
       </div>
 
+      <div className="flex items-center gap-2">
+        <label htmlFor="audio-update-quality" className="text-sm text-muted-foreground whitespace-nowrap">
+          Quality:
+        </label>
+        <select
+          id="audio-update-quality"
+          value={renderQuality}
+          onChange={(e) => onRenderQualityChange(e.target.value as RenderQuality)}
+          className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
+        >
+          <option value="full">Full Quality</option>
+          <option value="preview">Preview (720p)</option>
+        </select>
+      </div>
       <Button
         size="sm"
-        onClick={handleVideoUpdate}
+        onClick={() => handleVideoUpdate()}
         disabled={isUpdating}
         className="gap-2 w-full"
       >
@@ -487,9 +542,18 @@ function FinalVideoEditorComponent({
           />
           Apply settings to all videos
         </label>
+        <label className="flex items-center gap-2 text-sm text-muted-foreground mt-4">
+          <input
+            type="checkbox"
+            checked={renderQuality === 'preview'}
+            onChange={(e) => onRenderQualityChange(e.target.checked ? 'preview' : 'full')}
+            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+          />
+          Render previews in lower quality (faster)
+        </label>
         <Button
           size="sm"
-          onClick={handleVideoUpdate}
+          onClick={() => handleVideoUpdate()}
           disabled={isUpdating}
           className="gap-2 w-full mt-2"
         >
@@ -662,7 +726,7 @@ function FinalVideoEditorComponent({
             <Button variant="outline" onClick={() => setUpdatePromptReason(null)} disabled={isUpdating}>
               Later
             </Button>
-            <Button onClick={handleVideoUpdate} disabled={isUpdating} className="gap-2">
+            <Button onClick={() => handleVideoUpdate()} disabled={isUpdating} className="gap-2">
               {isUpdating && <Loader2 className="h-4 w-4 animate-spin" />}
               Update video
             </Button>

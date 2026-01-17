@@ -11,6 +11,7 @@ import {
   FinalizeContext,
   FinalizeResult,
   SpeedCurvedBlobCache,
+  RenderQuality,
 } from '@/lib/types';
 import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from '@/lib/speed-curve-config';
 import { createBezierEasing, type EasingFunction } from '@/lib/easing-functions';
@@ -79,6 +80,8 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
       onProgress?: (progress: FinalizeProgress) => void,
       inputDuration: number = 5
     ): Promise<FinalizeResult | null> => {
+      // Extract quality from context, default to 'full'
+      const quality: RenderQuality = context.quality ?? 'full';
       try {
         // Validate inputs
         if (transitionVideos.length === 0) {
@@ -390,7 +393,9 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
                 setProgress(progressUpdate);
                 onProgress?.(progressUpdate);
               },
-              easingFunction
+              easingFunction,
+              undefined, // bitrate (let hook determine based on quality)
+              quality
             );
 
             if (!curvedBlob) {
@@ -479,7 +484,8 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
             onProgress?.(progressUpdate);
           },
           undefined, // Use default bitrate
-          audioData
+          audioData,
+          quality
         );
 
         if (!finalBlob) {
