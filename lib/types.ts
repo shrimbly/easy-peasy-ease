@@ -2,6 +2,8 @@
  * Shared TypeScript types for the application
  */
 
+export type RenderQuality = 'preview' | 'full';
+
 export type VideoEncodeCapabilityStatus =
   | 'pending'
   | 'checking'

@@ -2,7 +2,8 @@ import type { VideoEncodingConfig } from 'mediabunny';
 import { DEFAULT_KEYFRAME_INTERVAL, MAX_OUTPUT_FPS } from './speed-curve-config';
 
 // Baseline profile, level 4.0 keeps reference frames minimal for Firefox forks
-export const AVC_LEVEL_4_0 = 'avc1.42C028';
+// Note: Using '00' for constraint flags instead of 'C0' for wider hardware encoder compatibility
+export const AVC_LEVEL_4_0 = 'avc1.420028';
 // High profile, level 5.1 for 4K support
 export const AVC_LEVEL_5_1 = 'avc1.640033';
 
