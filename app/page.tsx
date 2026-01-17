@@ -193,7 +193,7 @@ export default function Home() {
   const [isSupported, setIsSupported] = useState(true);
   const [preflightWarnings, setPreflightWarnings] = useState<PreflightWarning[]>([]);
   const [showPreflightDialog, setShowPreflightDialog] = useState(false);
-  const [renderQuality, setRenderQuality] = useState<RenderQuality>('full');
+  const [renderQuality, setRenderQuality] = useState<RenderQuality>('preview');
   const [currentRenderQuality, setCurrentRenderQuality] = useState<RenderQuality | null>(null);
   const transitionVideosRef = useRef<TransitionVideo[]>([]);
 
@@ -1072,20 +1072,15 @@ export default function Home() {
                   {transitionVideos.every((v) => v.url && !v.loading) && !isFinalizingVideo && (
                     <div className="space-y-3">
                       <div className="flex flex-col items-center gap-3">
-                        <div className="flex items-center gap-2">
-                          <label htmlFor="render-quality" className="text-sm text-muted-foreground">
-                            Render Quality:
-                          </label>
-                          <select
-                            id="render-quality"
-                            value={renderQuality}
-                            onChange={(e) => setRenderQuality(e.target.value as RenderQuality)}
-                            className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
-                          >
-                            <option value="full">Full Quality</option>
-                            <option value="preview">Preview (720p)</option>
-                          </select>
-                        </div>
+                        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            checked={renderQuality === 'preview'}
+                            onChange={(e) => setRenderQuality(e.target.checked ? 'preview' : 'full')}
+                            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                          />
+                          Render previews in lower quality (faster)
+                        </label>
                         <Button
                           size="lg"
                           onClick={() => handleFinalizeVideo()}

@@ -308,7 +308,7 @@ function FinalVideoEditorComponent({
     ? 'Rendering Full Quality...'
     : isPreviewRender
     ? 'Download (Render Full Quality)'
-    : 'Download';
+    : 'Download (full quality)';
 
   const ExportButtons = (
     <div className="flex gap-2">
@@ -495,20 +495,15 @@ function FinalVideoEditorComponent({
           />
           Apply settings to all videos
         </label>
-        <div className="flex items-center gap-2 mt-2">
-          <label htmlFor="update-quality" className="text-sm text-muted-foreground whitespace-nowrap">
-            Quality:
-          </label>
-          <select
-            id="update-quality"
-            value={renderQuality}
-            onChange={(e) => onRenderQualityChange(e.target.value as RenderQuality)}
-            className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
-          >
-            <option value="full">Full Quality</option>
-            <option value="preview">Preview (720p)</option>
-          </select>
-        </div>
+        <label className="flex items-center gap-2 text-sm text-muted-foreground mt-4">
+          <input
+            type="checkbox"
+            checked={renderQuality === 'preview'}
+            onChange={(e) => onRenderQualityChange(e.target.checked ? 'preview' : 'full')}
+            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+          />
+          Render previews in lower quality (faster)
+        </label>
         <Button
           size="sm"
           onClick={() => handleVideoUpdate()}
