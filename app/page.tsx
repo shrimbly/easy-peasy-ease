@@ -9,7 +9,7 @@ import { LightRays } from '@/components/ui/light-rays';
 import { BlurFade } from '@/components/ui/blur-fade';
 import { FinalVideoEditor } from '@/components/FinalVideoEditor';
 import { useFinalizeVideo } from '@/hooks/useFinalizeVideo';
-import { TransitionVideo, FinalVideo, AudioProcessingOptions } from '@/lib/types';
+import { TransitionVideo, FinalVideo, AudioProcessingOptions, RenderQuality } from '@/lib/types';
 import TextPressure from '@/components/text/text-pressure';
 import { canEncodeVideo, getEncodableVideoCodecs } from 'mediabunny';
 import {
@@ -193,6 +193,8 @@ export default function Home() {
   const [isSupported, setIsSupported] = useState(true);
   const [preflightWarnings, setPreflightWarnings] = useState<PreflightWarning[]>([]);
   const [showPreflightDialog, setShowPreflightDialog] = useState(false);
+  const [renderQuality, setRenderQuality] = useState<RenderQuality>('full');
+  const [currentRenderQuality, setCurrentRenderQuality] = useState<RenderQuality | null>(null);
   const transitionVideosRef = useRef<TransitionVideo[]>([]);
 
   useEffect(() => {
@@ -488,8 +490,8 @@ export default function Home() {
     );
   };
 
-  const handleReapplyFinalVideo = async (options?: AudioFinalizeOptions) => {
-    await handleFinalizeVideo(undefined, options, true);
+  const handleReapplyFinalVideo = async (options?: AudioFinalizeOptions & { quality?: RenderQuality }) => {
+    await handleFinalizeVideo(undefined, options, true, options?.quality);
   };
 
   const runPreflightChecks = (segments: TransitionVideo[]): PreflightWarning[] => {
@@ -561,9 +563,11 @@ export default function Home() {
   const handleFinalizeVideo = async (
     segmentsOverride?: TransitionVideo[],
     options?: AudioFinalizeOptions,
-    skipPreflight: boolean = false
+    skipPreflight: boolean = false,
+    qualityOverride?: RenderQuality
   ) => {
     const baseSegments = segmentsOverride ?? transitionVideos;
+    const effectiveQuality = qualityOverride ?? renderQuality;
 
     if (!skipPreflight) {
       const warnings = runPreflightChecks(baseSegments);
@@ -577,7 +581,7 @@ export default function Home() {
     try {
       setIsFinalizingVideo(true);
       setFinalizationProgress(0);
-      setFinalizationMessage('Initializing...');
+      setFinalizationMessage(effectiveQuality === 'preview' ? 'Initializing preview render...' : 'Initializing...');
 
       const segmentsToFinalize = syncSegmentsToLoopCount(baseSegments, loopCount);
 
@@ -589,7 +593,8 @@ export default function Home() {
         },
         undefined, // Let the hook determine duration from metadata/content
         options?.audioBlob,
-        options?.audioSettings
+        options?.audioSettings,
+        effectiveQuality
       );
 
       if (!finalBlob) {
@@ -610,8 +615,9 @@ export default function Home() {
         size: finalBlob.size,
         createdAt: new Date(),
       });
+      setCurrentRenderQuality(effectiveQuality);
 
-      setFinalizationMessage('Video finalized successfully!');
+      setFinalizationMessage(effectiveQuality === 'preview' ? 'Preview ready!' : 'Video finalized successfully!');
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       console.error('Error finalizing video:', error);
@@ -753,10 +759,14 @@ export default function Home() {
                 setUploadedVideos([]);
                 setSelectedSegmentId(null);
                 setLoopCount(1);
+                setCurrentRenderQuality(null);
               }}
               onDownload={handleDownloadFinalVideo}
               loopCount={loopCount}
               onLoopCountChange={handleLoopCountChange}
+              renderQuality={renderQuality}
+              onRenderQualityChange={setRenderQuality}
+              currentRenderQuality={currentRenderQuality}
             />
 
             <Dialog open={showPreflightDialog} onOpenChange={setShowPreflightDialog}>
@@ -1061,7 +1071,21 @@ export default function Home() {
                   {/* Finalize Button for Uploaded Videos */}
                   {transitionVideos.every((v) => v.url && !v.loading) && !isFinalizingVideo && (
                     <div className="space-y-3">
-                      <div className="flex justify-center">
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="flex items-center gap-2">
+                          <label htmlFor="render-quality" className="text-sm text-muted-foreground">
+                            Render Quality:
+                          </label>
+                          <select
+                            id="render-quality"
+                            value={renderQuality}
+                            onChange={(e) => setRenderQuality(e.target.value as RenderQuality)}
+                            className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+                          >
+                            <option value="full">Full Quality</option>
+                            <option value="preview">Preview (720p)</option>
+                          </select>
+                        </div>
                         <Button
                           size="lg"
                           onClick={() => handleFinalizeVideo()}

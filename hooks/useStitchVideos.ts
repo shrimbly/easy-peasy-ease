@@ -15,7 +15,8 @@ import {
   canEncodeVideo,
 } from 'mediabunny';
 import type { Rotation } from 'mediabunny';
-import { DEFAULT_BITRATE } from '@/lib/speed-curve-config';
+import type { RenderQuality } from '@/lib/types';
+import { DEFAULT_BITRATE, PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_BITRATE } from '@/lib/speed-curve-config';
 import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 
 const FALLBACK_WIDTH = 1920;
@@ -124,7 +125,8 @@ interface UseStitchVideosReturn {
     videoBlobs: Blob[],
     onProgress?: (progress: StitchProgress) => void,
     bitrate?: number,
-    audioData?: AudioData
+    audioData?: AudioData,
+    quality?: RenderQuality
   ) => Promise<Blob | null>;
   progress: StitchProgress;
   reset: () => void;
@@ -146,8 +148,10 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
       videoBlobs: Blob[],
       onProgress?: (progress: StitchProgress) => void,
       bitrate: number = DEFAULT_BITRATE,
-      audioData?: AudioData
+      audioData?: AudioData,
+      quality: RenderQuality = 'full'
     ): Promise<Blob | null> => {
+      const isPreview = quality === 'preview';
       try {
         // Reset progress
         const initialProgress: StitchProgress = {
@@ -187,11 +191,26 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
           height: probedHeight,
           rotation: aggregateRotation,
         } = await determineEncodeParameters(videoBlobs);
-        const safeWidth = probedWidth > 0 ? probedWidth : FALLBACK_WIDTH;
-        const safeHeight = probedHeight > 0 ? probedHeight : FALLBACK_HEIGHT;
-        const codecProfile =
-          safeWidth * safeHeight > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
-        const resolvedBitrate = Math.max(bitrate, DEFAULT_BITRATE);
+
+        // Apply preview constraints if in preview mode
+        let safeWidth = probedWidth > 0 ? probedWidth : FALLBACK_WIDTH;
+        let safeHeight = probedHeight > 0 ? probedHeight : FALLBACK_HEIGHT;
+
+        if (isPreview) {
+          // Scale down to 720p max while maintaining aspect ratio
+          if (safeWidth > PREVIEW_MAX_WIDTH || safeHeight > PREVIEW_MAX_HEIGHT) {
+            const scale = Math.min(PREVIEW_MAX_WIDTH / safeWidth, PREVIEW_MAX_HEIGHT / safeHeight);
+            safeWidth = ensureEvenDimension(Math.round(safeWidth * scale));
+            safeHeight = ensureEvenDimension(Math.round(safeHeight * scale));
+          }
+        }
+
+        const codecProfile = isPreview
+          ? 'avc1.42001f' // Level 3.1 for preview
+          : safeWidth * safeHeight > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
+        const resolvedBitrate = isPreview
+          ? Math.min(bitrate, PREVIEW_BITRATE)
+          : Math.max(bitrate, DEFAULT_BITRATE);
 
         const supportsConfig = await canEncodeVideo('avc', {
           width: safeWidth,

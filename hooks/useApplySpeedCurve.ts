@@ -22,6 +22,7 @@ import {
   type VideoCurveMetadata,
 } from '@/lib/speed-curve';
 import type { EasingFunction } from '@/lib/easing-functions';
+import type { RenderQuality } from '@/lib/types';
 import {
   DEFAULT_BITRATE,
   TARGET_FRAME_RATE,
@@ -32,6 +33,9 @@ import {
   DEFAULT_OUTPUT_DURATION,
   DEFAULT_EASING,
   MAX_OUTPUT_FPS,
+  PREVIEW_MAX_WIDTH,
+  PREVIEW_MAX_HEIGHT,
+  PREVIEW_BITRATE,
 } from '@/lib/speed-curve-config';
 import { createAvcEncodingConfig, AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
 
@@ -51,7 +55,8 @@ interface UseApplySpeedCurveReturn {
     outputDuration?: number,
     onProgress?: (progress: SpeedCurveProgress) => void,
     easingFunction?: EasingFunction | string,
-    bitrate?: number
+    bitrate?: number,
+    quality?: RenderQuality
   ) => Promise<Blob | null>;
   progress: SpeedCurveProgress;
   reset: () => void;
@@ -96,8 +101,10 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
       outputDuration: number = DEFAULT_OUTPUT_DURATION,
       onProgress?: (progress: SpeedCurveProgress) => void,
       easingFunction: EasingFunction | string = DEFAULT_EASING,
-      bitrate: number = DEFAULT_BITRATE
+      bitrate: number = DEFAULT_BITRATE,
+      quality: RenderQuality = 'full'
     ): Promise<Blob | null> => {
+      const isPreview = quality === 'preview';
       let input: Input | null = null;
 
       try {
@@ -310,33 +317,45 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
           label: string;
         };
 
-        // Define fallback tiers
-        const tiers: VideoTier[] = [
-          // Tier 1: Original Resolution (if 4K or high bitrate)
-          {
-            width: sourceWidth,
-            height: sourceHeight,
-            bitrate: resolvedBitrate,
-            codec: AVC_LEVEL_5_1,
-            label: 'Original'
-          },
-          // Tier 2: 1080p (Max 15Mbps)
-          {
-            width: Math.min(sourceWidth, 1920),
-            height: Math.min(sourceHeight, 1080),
-            bitrate: Math.min(resolvedBitrate, 15_000_000),
-            codec: AVC_LEVEL_4_0,
-            label: '1080p'
-          },
-          // Tier 3: 720p (Max 5Mbps)
-          {
-            width: Math.min(sourceWidth, 1280),
-            height: Math.min(sourceHeight, 720),
-            bitrate: Math.min(resolvedBitrate, 5_000_000),
-            codec: 'avc1.42001f', // Level 3.1
-            label: '720p'
-          }
-        ];
+        // Define fallback tiers based on quality mode
+        const tiers: VideoTier[] = isPreview
+          ? [
+              // Preview mode: Max 720p @ 4Mbps
+              {
+                width: Math.min(sourceWidth, PREVIEW_MAX_WIDTH),
+                height: Math.min(sourceHeight, PREVIEW_MAX_HEIGHT),
+                bitrate: Math.min(resolvedBitrate, PREVIEW_BITRATE),
+                codec: 'avc1.42001f', // Level 3.1
+                label: 'Preview 720p',
+              },
+            ]
+          : [
+              // Full quality mode: Original resolution with fallbacks
+              // Tier 1: Original Resolution (if 4K or high bitrate)
+              {
+                width: sourceWidth,
+                height: sourceHeight,
+                bitrate: resolvedBitrate,
+                codec: AVC_LEVEL_5_1,
+                label: 'Original',
+              },
+              // Tier 2: 1080p (Max 15Mbps)
+              {
+                width: Math.min(sourceWidth, 1920),
+                height: Math.min(sourceHeight, 1080),
+                bitrate: Math.min(resolvedBitrate, 15_000_000),
+                codec: AVC_LEVEL_4_0,
+                label: '1080p',
+              },
+              // Tier 3: 720p (Max 5Mbps)
+              {
+                width: Math.min(sourceWidth, 1280),
+                height: Math.min(sourceHeight, 720),
+                bitrate: Math.min(resolvedBitrate, 5_000_000),
+                codec: 'avc1.42001f', // Level 3.1
+                label: '720p',
+              },
+            ];
 
         let selectedConfig:
           | (VideoTier & { width: number; height: number; framerate: number })

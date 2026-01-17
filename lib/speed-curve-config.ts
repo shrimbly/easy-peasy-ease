@@ -18,6 +18,11 @@ export const MIN_SAMPLE_DURATION = 1 / 60000; // ultra-short aggregation to pres
 export const DEFAULT_BITRATE = 12_000_000; // 12 Mbps keeps quality without overloading decoders
 export const DEFAULT_KEYFRAME_INTERVAL = 0.5; // seconds between keyframes for stable seeking
 
+// Preview quality settings (720p @ 4Mbps, same framerate)
+export const PREVIEW_MAX_WIDTH = 1280;
+export const PREVIEW_MAX_HEIGHT = 720;
+export const PREVIEW_BITRATE = 4_000_000; // 4 Mbps for fast preview rendering
+
 // Speed curve parameters
 export const DEFAULT_INPUT_DURATION = 5; // Kling videos are 5 seconds
 export const DEFAULT_OUTPUT_DURATION = 1.5; // Target 1.5s with ease curve
