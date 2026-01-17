@@ -253,7 +253,8 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
                 onProgress?.(progressUpdate);
               },
               undefined,
-              audioData
+              audioData,
+              quality
             );
 
             if (!finalBlob) {
