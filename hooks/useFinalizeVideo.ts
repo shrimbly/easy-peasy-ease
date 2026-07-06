@@ -7,7 +7,6 @@ import { useAudioMixing } from './useAudioMixing';
 import { useRemuxAudio } from './useRemuxAudio';
 import {
   TransitionVideo,
-  AudioProcessingOptions,
   FinalizeContext,
   FinalizeResult,
   SpeedCurvedBlobCache,
@@ -15,6 +14,7 @@ import {
 } from '@/lib/types';
 import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from '@/lib/speed-curve-config';
 import { createBezierEasing, type EasingFunction } from '@/lib/easing-functions';
+import { isAbortError } from '@/lib/abort-utils';
 
 interface FinalizeProgress {
   stage: 'idle' | 'applying-curves' | 'mixing-audio' | 'stitching' | 'remuxing' | 'complete' | 'error';
@@ -23,6 +23,8 @@ interface FinalizeProgress {
   currentVideo?: number;
   totalVideos?: number;
   error?: string;
+  /** Non-fatal problems the user should know about (e.g. rendered without audio) */
+  warnings?: string[];
 }
 
 interface UseFinalizeVideoReturn {
@@ -37,10 +39,16 @@ interface UseFinalizeVideoReturn {
 }
 
 /**
- * Compute a hash string for cache invalidation based on segment parameters
- * that affect speed curve output.
+ * Compute a hash string for cache invalidation based on every parameter that
+ * affects speed-curve output — including render quality and input duration,
+ * so preview-quality intermediates can never silently end up inside a
+ * full-quality export.
  */
-function computeConfigHash(videos: TransitionVideo[]): string {
+export function computeConfigHash(
+  videos: TransitionVideo[],
+  quality: RenderQuality,
+  inputDuration: number
+): string {
   const relevantData = videos
     .filter((v) => v.url && !v.loading)
     .map((v) => ({
@@ -52,14 +60,17 @@ function computeConfigHash(videos: TransitionVideo[]): string {
       // Use file size as proxy for source video identity
       sourceSize: v.file?.size ?? v.cachedBlob?.size ?? 0,
     }));
-  return JSON.stringify(relevantData);
+  return JSON.stringify({ quality, inputDuration, segments: relevantData });
 }
 
 /**
  * Hook that orchestrates the complete finalization pipeline with multiple paths:
- * - Fast path: remux audio only (when only fade settings change)
+ * - Fast path: remux audio only (when only fade/offset settings change)
  * - Medium path: re-stitch with cached blobs (when audio file changes)
  * - Full path: apply speed curves and stitch (when segment params change)
+ *
+ * Fast and medium paths are only taken when the cached blobs were produced
+ * from the exact current configuration (validated via configHash).
  */
 export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
   const [progress, setProgress] = useState<FinalizeProgress>({
@@ -80,8 +91,16 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
       onProgress?: (progress: FinalizeProgress) => void,
       inputDuration: number = 5
     ): Promise<FinalizeResult | null> => {
-      // Extract quality from context, default to 'full'
       const quality: RenderQuality = context.quality ?? 'full';
+      const signal = context.signal;
+      const warnings: string[] = [];
+
+      const emit = (p: Omit<FinalizeProgress, 'warnings'>) => {
+        const withWarnings: FinalizeProgress = warnings.length ? { ...p, warnings: [...warnings] } : p;
+        setProgress(withWarnings);
+        onProgress?.(withWarnings);
+      };
+
       try {
         // Validate inputs
         if (transitionVideos.length === 0) {
@@ -94,6 +113,15 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
         }
 
         const totalVideos = videosWithUrls.length;
+        const currentConfigHash = computeConfigHash(transitionVideos, quality, inputDuration);
+
+        // Cached intermediates may only be reused when they were rendered
+        // from the exact current segment configuration and quality.
+        const cacheIsValid =
+          !!context.cachedBlobs &&
+          context.cachedBlobs.configHash === currentConfigHash &&
+          context.cachedBlobs.blobs.size >= totalVideos &&
+          videosWithUrls.every((v) => context.cachedBlobs!.blobs.has(v.id));
 
         // ===========================================
         // FAST PATH: Remux audio only (fade changes)
@@ -103,31 +131,31 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
           context.previousFinalVideo &&
           context.audioBlob &&
           context.audioSettings &&
-          context.cachedBlobs
+          cacheIsValid
         ) {
-          const remuxProgress: FinalizeProgress = {
+          emit({
             stage: 'remuxing',
             message: 'Applying audio changes...',
             progress: 0,
             totalVideos,
-          };
-          setProgress(remuxProgress);
-          onProgress?.(remuxProgress);
+          });
 
           try {
             const remuxedBlob = await remuxWithNewAudio(
               context.previousFinalVideo,
               context.audioBlob,
               context.audioSettings,
-              (p) => {
-                const progressUpdate: FinalizeProgress = {
-                  stage: 'remuxing',
-                  message: p.message,
-                  progress: p.progress,
-                  totalVideos,
-                };
-                setProgress(progressUpdate);
-                onProgress?.(progressUpdate);
+              {
+                quality,
+                signal,
+                onProgress: (p) => {
+                  emit({
+                    stage: 'remuxing',
+                    message: p.message,
+                    progress: p.progress,
+                    totalVideos,
+                  });
+                },
               }
             );
 
@@ -135,23 +163,21 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
               throw new Error('Remux failed');
             }
 
-            const completeProgress: FinalizeProgress = {
+            emit({
               stage: 'complete',
               message: `Success! Created ${(remuxedBlob.size / 1024 / 1024).toFixed(2)}MB final video`,
               progress: 100,
               totalVideos,
-            };
-            setProgress(completeProgress);
-            onProgress?.(completeProgress);
+            });
 
             return {
               finalBlob: remuxedBlob,
-              speedCurvedCache: context.cachedBlobs, // Preserve existing cache
+              speedCurvedCache: context.cachedBlobs!, // Preserve existing cache
             };
           } catch (remuxError) {
+            if (isAbortError(remuxError)) throw remuxError;
             // Fall back to medium path if remux fails
             console.warn('Remux failed, falling back to re-stitch:', remuxError);
-            // Continue to medium path below
           }
         }
 
@@ -160,120 +186,90 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
         // ===========================================
         if (
           (context.reason === 'audio-file' || context.reason === 'audio-fade') &&
-          context.cachedBlobs &&
-          context.cachedBlobs.blobs.size >= totalVideos
+          cacheIsValid
         ) {
-          const stitchStartProgress: FinalizeProgress = {
+          emit({
             stage: 'stitching',
             message: 'Stitching videos...',
             progress: 0,
             totalVideos,
+          });
+
+          const speedCurvedBlobs = videosWithUrls.map(
+            (video) => context.cachedBlobs!.blobs.get(video.id)!
+          );
+
+          // Prepare audio if provided
+          let audioData: { buffer: AudioBuffer; duration: number } | undefined;
+          const totalVideoDuration = videosWithUrls.reduce(
+            (sum, v) => sum + (v.duration ?? DEFAULT_OUTPUT_DURATION),
+            0
+          );
+
+          if (context.audioBlob) {
+            emit({
+              stage: 'mixing-audio',
+              message: 'Preparing audio track...',
+              progress: 25,
+              totalVideos,
+            });
+
+            try {
+              audioData = await prepareAudio(
+                context.audioBlob,
+                totalVideoDuration,
+                (mixProgress) => {
+                  emit({
+                    stage: 'mixing-audio',
+                    message: mixProgress.message,
+                    progress: 25 + (mixProgress.progress / 100) * 25,
+                    totalVideos,
+                  });
+                },
+                context.audioSettings
+              ) ?? undefined;
+            } catch (audioError) {
+              if (isAbortError(audioError)) throw audioError;
+              console.warn('Audio processing error, continuing without audio:', audioError);
+              warnings.push(
+                'Your music could not be processed, so the video was rendered without audio.'
+              );
+            }
+          }
+
+          const finalBlob = await stitchVideos(speedCurvedBlobs, {
+            quality,
+            signal,
+            audioData,
+            onWarning: (message) => warnings.push(message),
+            onProgress: (stitchProg) => {
+              const baseProgress = audioData ? 50 : 25;
+              const rangeProgress = audioData ? 50 : 75;
+              emit({
+                stage: 'stitching',
+                message: stitchProg.message,
+                progress: baseProgress + (stitchProg.progress / 100) * rangeProgress,
+                currentVideo: stitchProg.currentVideo,
+                totalVideos: stitchProg.totalVideos,
+              });
+            },
+          });
+
+          if (!finalBlob) {
+            throw new Error('Failed to stitch videos');
+          }
+
+          emit({
+            stage: 'complete',
+            message: `Success! Created ${(finalBlob.size / 1024 / 1024).toFixed(2)}MB final video`,
+            progress: 100,
+            totalVideos,
+          });
+
+          return {
+            finalBlob,
+            speedCurvedCache: context.cachedBlobs!, // Preserve existing cache
           };
-          setProgress(stitchStartProgress);
-          onProgress?.(stitchStartProgress);
-
-          // Get cached blobs in order
-          const speedCurvedBlobs: Blob[] = [];
-          for (const video of videosWithUrls) {
-            const cachedBlob = context.cachedBlobs.blobs.get(video.id);
-            if (cachedBlob) {
-              speedCurvedBlobs.push(cachedBlob);
-            } else {
-              // Cache miss - fall through to full path
-              console.warn(`Cache miss for video ${video.id}, falling back to full render`);
-              break;
-            }
-          }
-
-          // Only use medium path if we have all cached blobs
-          if (speedCurvedBlobs.length === totalVideos) {
-            // Prepare audio if provided
-            let audioData: { buffer: AudioBuffer; duration: number } | undefined;
-            const totalVideoDuration = videosWithUrls.reduce(
-              (sum, v) => sum + (v.duration ?? DEFAULT_OUTPUT_DURATION),
-              0
-            );
-
-            if (context.audioBlob) {
-              const audioMixProgress: FinalizeProgress = {
-                stage: 'mixing-audio',
-                message: 'Preparing audio track...',
-                progress: 25,
-                totalVideos,
-              };
-              setProgress(audioMixProgress);
-              onProgress?.(audioMixProgress);
-
-              try {
-                audioData = await prepareAudio(
-                  context.audioBlob,
-                  totalVideoDuration,
-                  (mixProgress) => {
-                    const overallProgress = 25 + (mixProgress.progress / 100) * 25;
-                    const progressUpdate: FinalizeProgress = {
-                      stage: 'mixing-audio',
-                      message: mixProgress.message,
-                      progress: overallProgress,
-                      totalVideos,
-                    };
-                    setProgress(progressUpdate);
-                    onProgress?.(progressUpdate);
-                  },
-                  context.audioSettings
-                ) ?? undefined;
-              } catch (audioError) {
-                console.warn('Audio processing error, continuing without audio:', audioError);
-              }
-            }
-
-            // Stitch videos
-            const stitchProgress: FinalizeProgress = {
-              stage: 'stitching',
-              message: 'Stitching videos...',
-              progress: audioData ? 50 : 25,
-              totalVideos,
-            };
-            setProgress(stitchProgress);
-            onProgress?.(stitchProgress);
-
-            const finalBlob = await stitchVideos(
-              speedCurvedBlobs,
-              (stitchProg) => {
-                const baseProgress = audioData ? 50 : 25;
-                const rangeProgress = audioData ? 50 : 75;
-                const overallProgress = baseProgress + (stitchProg.progress / 100) * rangeProgress;
-                const progressUpdate: FinalizeProgress = {
-                  stage: 'stitching',
-                  message: stitchProg.message,
-                  progress: overallProgress,
-                  currentVideo: stitchProg.currentVideo,
-                  totalVideos: stitchProg.totalVideos,
-                };
-                setProgress(progressUpdate);
-                onProgress?.(progressUpdate);
-              },
-              undefined,
-              audioData
-            );
-
-            if (!finalBlob) {
-              throw new Error('Failed to stitch videos');
-            }
-
-            const completeProgress: FinalizeProgress = {
-              stage: 'complete',
-              message: `Success! Created ${(finalBlob.size / 1024 / 1024).toFixed(2)}MB final video`,
-              progress: 100,
-              totalVideos,
-            };
-            setProgress(completeProgress);
-            onProgress?.(completeProgress);
-
-            return {
-              finalBlob,
-              speedCurvedCache: context.cachedBlobs, // Preserve existing cache
-            };
-          }
         }
 
         // ===========================================
@@ -281,15 +277,12 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
         // ===========================================
         const transitionMap = new Map(transitionVideos.map((segment) => [segment.id, segment]));
 
-        // Reset progress
-        const initialProgress: FinalizeProgress = {
+        emit({
           stage: 'applying-curves',
           message: 'Applying speed curves...',
           progress: 0,
           totalVideos,
-        };
-        setProgress(initialProgress);
-        onProgress?.(initialProgress);
+        });
 
         // Step 1: Apply speed curves to each video
         const speedCurvedBlobs: Blob[] = [];
@@ -308,185 +301,133 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
             easingFunction = segmentMetadata.easingPreset;
           }
 
-          try {
-            // Fetch video blob from URL or use cached file
-            let videoBlob: Blob;
-
-            console.log(`[Debug] Processing video ${videoNumber}`, {
-              id: video.id,
-              hasFile: !!segmentMetadata.file,
-              hasCachedBlob: !!segmentMetadata.cachedBlob,
-              fileName: segmentMetadata.file instanceof File ? segmentMetadata.file.name : 'not-a-file',
-              fileSize: segmentMetadata.file?.size,
-              url: video.url
-            });
-
-            // Helper to verify blob is readable
-            const verifyBlob = async (b: Blob, label: string) => {
-              try {
-                const slice = b.slice(0, 1024);
-                await slice.arrayBuffer();
-                console.log(`[Debug] ${label} is readable`);
-                return true;
-              } catch (e) {
-                console.error(`[Debug] ${label} is NOT readable`, e);
-                return false;
-              }
-            };
-
-            const tryGetReadableBlob = async (): Promise<Blob | null> => {
-              const candidates: Array<{ blob?: Blob; label: string }> = [
-                { blob: segmentMetadata.cachedBlob, label: 'Cached blob' },
-                { blob: segmentMetadata.file, label: 'File' },
-              ];
-              for (const candidate of candidates) {
-                if (!candidate.blob) continue;
-                const readable = await verifyBlob(candidate.blob, candidate.label);
-                if (readable) {
-                  return candidate.blob;
-                }
-              }
-              return null;
-            };
-
-            const readableSource = await tryGetReadableBlob();
-
-            if (readableSource) {
-              videoBlob = readableSource;
-            } else {
-              console.warn(`[Debug] No readable blob for video ${videoNumber}, falling back to fetch`);
-              const response = await fetch(video.url);
-              if (!response.ok) {
-                throw new Error(`Failed to fetch video: ${response.statusText}`);
-              }
-              videoBlob = await response.blob();
+          // Resolve a readable source blob: prefer the original File (backed
+          // by disk, no RAM copy), then any cached blob, then object-URL fetch.
+          const verifyBlob = async (b: Blob) => {
+            try {
+              await b.slice(0, 1024).arrayBuffer();
+              return true;
+            } catch {
+              return false;
             }
+          };
 
-            // Update progress
-            const curveProgress = ((i) / totalVideos) * 50;
-            const updateMsg = `Applying speed curve to video ${videoNumber}/${totalVideos}...`;
-            const progressObj: FinalizeProgress = {
-              stage: 'applying-curves',
-              message: updateMsg,
-              progress: curveProgress,
-              currentVideo: videoNumber,
-              totalVideos,
-            };
-            setProgress(progressObj);
-            onProgress?.(progressObj);
-
-            // Apply speed curve with progress callback
-            const curvedBlob = await applySpeedCurve(
-              videoBlob,
-              inputDuration, // Input duration from settings
-              targetDuration,
-              (curveProgress_inner) => {
-                const overallProgress = (i / totalVideos) * 50 +
-                  (curveProgress_inner.progress / 100) * (50 / totalVideos);
-                const progressUpdate: FinalizeProgress = {
-                  stage: 'applying-curves',
-                  message: `${updateMsg} (${curveProgress_inner.message})`,
-                  progress: overallProgress,
-                  currentVideo: videoNumber,
-                  totalVideos,
-                };
-                setProgress(progressUpdate);
-                onProgress?.(progressUpdate);
-              },
-              easingFunction,
-              undefined, // bitrate (let hook determine based on quality)
-              quality
-            );
-
-            if (!curvedBlob) {
-              throw new Error(`Failed to apply speed curve to video ${videoNumber}`);
+          let videoBlob: Blob | null = null;
+          for (const candidate of [segmentMetadata.file, segmentMetadata.cachedBlob]) {
+            if (candidate && (await verifyBlob(candidate))) {
+              videoBlob = candidate;
+              break;
             }
-
-            speedCurvedBlobs.push(curvedBlob);
-            newCacheBlobs.set(video.id, curvedBlob);
-          } catch (error) {
-            const errorMsg = error instanceof Error
-              ? error.message
-              : `Failed to process video ${videoNumber}`;
-            console.error(`Error processing video ${videoNumber}:`, error);
-            throw new Error(errorMsg);
           }
+          if (!videoBlob) {
+            console.warn(`No readable blob for video ${videoNumber}, falling back to fetch`);
+            const response = await fetch(video.url);
+            if (!response.ok) {
+              throw new Error(`Failed to fetch video: ${response.statusText}`);
+            }
+            videoBlob = await response.blob();
+          }
+
+          const updateMsg = `Applying speed curve to video ${videoNumber}/${totalVideos}...`;
+          emit({
+            stage: 'applying-curves',
+            message: updateMsg,
+            progress: (i / totalVideos) * 50,
+            currentVideo: videoNumber,
+            totalVideos,
+          });
+
+          const curvedBlob = await applySpeedCurve(videoBlob, {
+            inputDuration,
+            outputDuration: targetDuration,
+            easing: easingFunction,
+            quality,
+            signal,
+            onProgress: (curveProgress) => {
+              emit({
+                stage: 'applying-curves',
+                message: `${updateMsg} (${curveProgress.message})`,
+                progress: (i / totalVideos) * 50 + (curveProgress.progress / 100) * (50 / totalVideos),
+                currentVideo: videoNumber,
+                totalVideos,
+              });
+            },
+          });
+
+          if (!curvedBlob) {
+            if (signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError');
+            }
+            throw new Error(`Failed to apply speed curve to video ${videoNumber}`);
+          }
+
+          speedCurvedBlobs.push(curvedBlob);
+          newCacheBlobs.set(video.id, curvedBlob);
         }
 
         // Step 2: Prepare audio if provided
         let audioData: { buffer: AudioBuffer; duration: number } | undefined;
-        let totalVideoDuration = 0;
-
-        // Calculate total video duration
-        if (speedCurvedBlobs.length > 0) {
-          totalVideoDuration = transitionVideos
-            .filter((v) => v.url && !v.loading)
-            .reduce((sum, v) => sum + (v.duration ?? DEFAULT_OUTPUT_DURATION), 0);
-        }
+        const totalVideoDuration = videosWithUrls.reduce(
+          (sum, v) => sum + (v.duration ?? DEFAULT_OUTPUT_DURATION),
+          0
+        );
 
         if (context.audioBlob) {
-          const audioMixProgress: FinalizeProgress = {
+          emit({
             stage: 'mixing-audio',
             message: 'Preparing audio track...',
             progress: 50,
             totalVideos,
-          };
-          setProgress(audioMixProgress);
-          onProgress?.(audioMixProgress);
+          });
 
           try {
             audioData = await prepareAudio(
               context.audioBlob,
               totalVideoDuration,
               (mixProgress) => {
-                const overallProgress = 50 + (mixProgress.progress / 100) * 25;
-                const progressUpdate: FinalizeProgress = {
+                emit({
                   stage: 'mixing-audio',
                   message: mixProgress.message,
-                  progress: overallProgress,
+                  progress: 50 + (mixProgress.progress / 100) * 25,
                   totalVideos,
-                };
-                setProgress(progressUpdate);
-                onProgress?.(progressUpdate);
+                });
               },
               context.audioSettings
             ) ?? undefined;
           } catch (audioError) {
-            const errorMsg = audioError instanceof Error ? audioError.message : 'Failed to process audio';
+            if (isAbortError(audioError)) throw audioError;
             console.warn('Audio processing error, continuing without audio:', audioError);
+            warnings.push(
+              'Your music could not be processed, so the video was rendered without audio.'
+            );
           }
         }
 
         // Step 3: Stitch all speed-curved videos together with audio
-        const stitchStartProgress: FinalizeProgress = {
+        emit({
           stage: 'stitching',
           message: 'Stitching videos together...',
           progress: audioData ? 75 : 50,
           totalVideos,
-        };
-        setProgress(stitchStartProgress);
-        onProgress?.(stitchStartProgress);
+        });
 
-        const finalBlob = await stitchVideos(
-          speedCurvedBlobs,
-          (stitchProgress) => {
+        const finalBlob = await stitchVideos(speedCurvedBlobs, {
+          quality,
+          signal,
+          audioData,
+          onWarning: (message) => warnings.push(message),
+          onProgress: (stitchProgress) => {
             const baseProgress = audioData ? 75 : 50;
             const rangeProgress = audioData ? 25 : 50;
-            const overallProgress = baseProgress + (stitchProgress.progress / 100) * rangeProgress;
-            const progressUpdate: FinalizeProgress = {
+            emit({
               stage: 'stitching',
               message: stitchProgress.message,
-              progress: overallProgress,
+              progress: baseProgress + (stitchProgress.progress / 100) * rangeProgress,
               currentVideo: stitchProgress.currentVideo,
               totalVideos: stitchProgress.totalVideos,
-            };
-            setProgress(progressUpdate);
-            onProgress?.(progressUpdate);
+            });
           },
-          undefined, // Use default bitrate
-          audioData,
-          quality
-        );
+        });
 
         if (!finalBlob) {
           throw new Error('Failed to stitch videos');
@@ -495,35 +436,38 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
         // Build cache for future updates
         const newCache: SpeedCurvedBlobCache = {
           blobs: newCacheBlobs,
-          configHash: computeConfigHash(transitionVideos),
+          configHash: currentConfigHash,
         };
 
-        const completeProgress: FinalizeProgress = {
+        emit({
           stage: 'complete',
           message: `Success! Created ${(finalBlob.size / 1024 / 1024).toFixed(2)}MB final video`,
           progress: 100,
           totalVideos,
-        };
-        setProgress(completeProgress);
-        onProgress?.(completeProgress);
+        });
 
         return {
           finalBlob,
           speedCurvedCache: newCache,
         };
       } catch (error) {
+        if (isAbortError(error) || signal?.aborted) {
+          emit({
+            stage: 'idle',
+            message: 'Cancelled',
+            progress: 0,
+          });
+          return null;
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error('Video finalization error:', error);
 
-        const errorProgress: FinalizeProgress = {
+        emit({
           stage: 'error',
           message: `Error: ${errorMessage}`,
           progress: 0,
           error: errorMessage,
-        };
-
-        setProgress(errorProgress);
-        onProgress?.(errorProgress);
+        });
 
         return null;
       }

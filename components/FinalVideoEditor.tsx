@@ -578,6 +578,7 @@ function FinalVideoEditorComponent({
               ref={videoRef}
               src={finalVideo.url}
               loop
+              playsInline
               className="h-full w-full"
               preload="metadata"
             />

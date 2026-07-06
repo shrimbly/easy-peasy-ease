@@ -19,14 +19,22 @@ import {
   RenderQuality,
 } from '@/lib/types';
 import TextPressure from '@/components/text/text-pressure';
-import { canEncodeVideo, getEncodableVideoCodecs } from 'mediabunny';
+import {
+  getEncodableVideoCodecs,
+  canEncodeAudio,
+  Input,
+  BlobSource,
+  ALL_FORMATS,
+} from 'mediabunny';
 import {
   DEFAULT_CUSTOM_BEZIER,
   EASING_PRESETS,
   getPresetBezier,
 } from '@/lib/easing-presets';
-import { DEFAULT_EASING } from '@/lib/speed-curve-config';
-import { AVC_LEVEL_4_0, AVC_LEVEL_5_1 } from '@/lib/video-encoding';
+import { DEFAULT_EASING, MAX_OUTPUT_FPS, PREVIEW_FPS } from '@/lib/speed-curve-config';
+import { buildEncodeTiers } from '@/lib/encode-planner';
+import { selectSupportedTier } from '@/lib/video-encoding';
+import { ensureAudioEncoders } from '@/lib/audio-codec';
 
 type AudioFinalizeOptions = {
   audioBlob?: Blob;
@@ -40,9 +48,6 @@ type VideoMetadata = {
   duration: number;
 };
 
-const FOUR_K_WIDTH = 3840;
-const FOUR_K_HEIGHT = 2160;
-const BASELINE_PIXEL_LIMIT = 1920 * 1080; // Use Level 5.1 for resolutions above 1080p
 const MAX_TOTAL_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5GB
 
 interface PreflightWarning {
@@ -52,58 +57,45 @@ interface PreflightWarning {
   severity: 'warning' | 'error';
 }
 
-const readVideoMetadata = (file: File | Blob): Promise<VideoMetadata> =>
-  new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement('video');
-    video.preload = 'metadata';
-    video.muted = true;
-    video.playsInline = true;
-
-    const cleanup = () => {
-      video.removeAttribute('src');
-      video.load();
-      URL.revokeObjectURL(url);
+/**
+ * Probe an uploaded video with mediabunny (works for anything the render
+ * pipeline can read, unlike an HTMLVideoElement) and report whether this
+ * machine can decode it and encode output for it.
+ */
+const readVideoMetadata = async (
+  file: File | Blob
+): Promise<VideoMetadata & { codedWidth: number; codedHeight: number; canDecode: boolean; bitrate?: number }> => {
+  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) {
+      throw new Error('No video track found in this file.');
+    }
+    const [displayWidth, displayHeight, codedWidth, codedHeight, canDecode, duration, stats] =
+      await Promise.all([
+        track.getDisplayWidth(),
+        track.getDisplayHeight(),
+        track.getCodedWidth(),
+        track.getCodedHeight(),
+        track.canDecode().catch(() => false),
+        track.computeDuration().catch(() => 0),
+        track.computePacketStats().catch(() => null),
+      ]);
+    return {
+      width: displayWidth,
+      height: displayHeight,
+      codedWidth,
+      codedHeight,
+      canDecode,
+      duration,
+      bitrate:
+        stats?.averageBitrate && Number.isFinite(stats.averageBitrate)
+          ? stats.averageBitrate
+          : undefined,
     };
-
-    video.onloadedmetadata = () => {
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-      const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      cleanup();
-      if (!width || !height) {
-        reject(new Error('Unable to determine video dimensions.'));
-        return;
-      }
-      resolve({ width, height, duration });
-    };
-
-    video.onerror = () => {
-      cleanup();
-      reject(new Error('Failed to read video metadata.'));
-    };
-
-    video.src = url;
-  });
-
-const getCodecStringForResolution = (width: number, height: number) =>
-  width * height > BASELINE_PIXEL_LIMIT ? AVC_LEVEL_5_1 : AVC_LEVEL_4_0;
-
-const estimateBitrateForResolution = (width: number, height: number) => {
-  const pixels = width * height;
-  if (pixels >= FOUR_K_WIDTH * FOUR_K_HEIGHT) {
-    return 25_000_000;
+  } finally {
+    input.dispose();
   }
-  if (pixels >= 2560 * 1440) {
-    return 16_000_000;
-  }
-  if (pixels >= 1920 * 1080) {
-    return 12_000_000;
-  }
-  if (pixels >= 1280 * 720) {
-    return 6_000_000;
-  }
-  return 3_000_000;
 };
 
 const formatResolutionLabel = (width?: number, height?: number) =>
@@ -204,7 +196,11 @@ export default function Home() {
   const [showPreflightDialog, setShowPreflightDialog] = useState(false);
   const [renderQuality, setRenderQuality] = useState<RenderQuality>('preview');
   const [currentRenderQuality, setCurrentRenderQuality] = useState<RenderQuality | null>(null);
+  const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  const [finalizeWarnings, setFinalizeWarnings] = useState<string[]>([]);
+  const [audioExportSupported, setAudioExportSupported] = useState(true);
   const transitionVideosRef = useRef<TransitionVideo[]>([]);
+  const finalizeAbortRef = useRef<AbortController | null>(null);
 
   // Cache for speed-curved blobs to enable fast audio-only updates
   const [speedCurveCache, setSpeedCurveCache] = useState<SpeedCurvedBlobCache | null>(null);
@@ -221,7 +217,14 @@ export default function Home() {
         const codecs = await getEncodableVideoCodecs();
         if (codecs.length === 0) {
           setIsSupported(false);
+          return;
         }
+        // Audio preflight: registers the AAC WASM polyfill when the browser
+        // lacks a native encoder (e.g. Firefox), then verifies music export
+        // will actually work so users learn about it before rendering.
+        await ensureAudioEncoders();
+        const audioOk = (await canEncodeAudio('aac')) || (await canEncodeAudio('mp3'));
+        setAudioExportSupported(audioOk);
       } catch (e) {
         console.warn("WebCodecs support check failed:", e);
         setIsSupported(false);
@@ -229,6 +232,55 @@ export default function Home() {
     };
     checkSupport();
   }, []);
+
+  // A file dropped outside the upload zone must not navigate the tab away
+  // (which destroys the whole session).
+  useEffect(() => {
+    const prevent = (event: DragEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('dragover', prevent);
+    window.addEventListener('drop', prevent);
+    return () => {
+      window.removeEventListener('dragover', prevent);
+      window.removeEventListener('drop', prevent);
+    };
+  }, []);
+
+  // Long renders: keep the screen awake (feature-detected) and warn before
+  // the tab is closed accidentally.
+  useEffect(() => {
+    if (!isFinalizingVideo) {
+      return;
+    }
+
+    let wakeLock: { release: () => Promise<void> } | null = null;
+    let cancelled = false;
+    const nav = navigator as Navigator & {
+      wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> };
+    };
+    nav.wakeLock
+      ?.request('screen')
+      .then((lock) => {
+        if (cancelled) {
+          void lock.release().catch(() => {});
+        } else {
+          wakeLock = lock;
+        }
+      })
+      .catch(() => {});
+
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('beforeunload', beforeUnload);
+      void wakeLock?.release().catch(() => {});
+    };
+  }, [isFinalizingVideo]);
 
   const { finalizeVideos } = useFinalizeVideo();
 
@@ -283,14 +335,28 @@ export default function Home() {
 
           try {
             const metadata = await readVideoMetadata(blobSource);
-            const codecString = getCodecStringForResolution(metadata.width, metadata.height);
-            const bitrate = estimateBitrateForResolution(metadata.width, metadata.height);
-            const supported = await canEncodeVideo('avc', {
-              width: metadata.width,
-              height: metadata.height,
-              bitrate,
-              fullCodecString: codecString,
-            });
+
+            // Plan output tiers exactly the way the render pipeline will,
+            // and check the full ladder: a device that cannot handle native
+            // resolution but can handle 1080p is still supported (it will
+            // render at the best tier it can).
+            const tiers = buildEncodeTiers(
+              { width: metadata.codedWidth, height: metadata.codedHeight, bitrate: metadata.bitrate },
+              'full',
+              [MAX_OUTPUT_FPS, PREVIEW_FPS]
+            );
+            const tier = metadata.canDecode ? await selectSupportedTier(tiers) : null;
+
+            const supported = metadata.canDecode && tier !== null;
+            const isNativeTier =
+              tier !== null && !tier.needsResize;
+            const message = !metadata.canDecode
+              ? 'This browser cannot decode this video format. Try converting it to H.264 MP4.'
+              : tier === null
+                ? `Device encoder cannot output ${formatResolutionLabel(metadata.width, metadata.height)}`
+                : isNativeTier
+                  ? `Device can encode ${formatResolutionLabel(metadata.width, metadata.height)}`
+                  : `Will render at ${tier.width}x${tier.height} on this device (source is ${formatResolutionLabel(metadata.width, metadata.height)})`;
 
             setTransitionVideos((prev) => {
               if (!prev.some((v) => v.id === segmentId)) {
@@ -304,11 +370,9 @@ export default function Home() {
                     height: metadata.height,
                     encodeCapability: {
                       status: supported ? 'supported' : 'unsupported',
-                      message: supported
-                        ? `Device can encode ${metadata.width}x${metadata.height} AVC`
-                        : `Device encoder cannot output ${metadata.width}x${metadata.height}`,
-                      codecString,
-                      bitrate,
+                      message,
+                      codecString: tier?.codecString,
+                      bitrate: tier?.bitrate,
                     },
                   }
                   : v
@@ -351,31 +415,31 @@ export default function Home() {
       setUploadedVideos(videoFiles);
 
       try {
-        const preparedSegments = await Promise.all(
-          videoFiles.map(async (file, index) => {
-            const buffer = await file.arrayBuffer();
-            const cachedBlob = new Blob([buffer], { type: file.type || 'video/mp4' });
-            const objectUrl = URL.createObjectURL(cachedBlob);
+        // Keep the File reference as the source of truth: Files are backed
+        // by disk and mediabunny reads them lazily in ranges, so uploads no
+        // longer get copied wholesale into RAM (which crashed low-memory
+        // devices). The finalize path verifies readability and falls back to
+        // fetching the object URL if the file becomes unreadable.
+        const preparedSegments = videoFiles.map((file, index) => {
+          const objectUrl = URL.createObjectURL(file);
 
-            return {
-              id: index + 1,
-              name: file.name,
-              url: objectUrl,
-              loading: false,
-              duration: 1.5,
-              easingPreset: DEFAULT_EASING,
-              useCustomEasing: false,
-              customBezier: getPresetBezier(DEFAULT_EASING),
-              loopIteration: 1,
-              file,
-              cachedBlob,
-              encodeCapability: {
-                status: 'checking',
-                message: 'Checking device encoder support...',
-              },
-            } as TransitionVideo;
-          })
-        );
+          return {
+            id: index + 1,
+            name: file.name,
+            url: objectUrl,
+            loading: false,
+            duration: 1.5,
+            easingPreset: DEFAULT_EASING,
+            useCustomEasing: false,
+            customBezier: getPresetBezier(DEFAULT_EASING),
+            loopIteration: 1,
+            file,
+            encodeCapability: {
+              status: 'checking',
+              message: 'Checking device encoder support...',
+            },
+          } as TransitionVideo;
+        });
 
         setTransitionVideos((prev) => {
           cleanupSegmentResources(prev);
@@ -632,9 +696,14 @@ export default function Home() {
       }
     }
 
+    const abortController = new AbortController();
+    finalizeAbortRef.current = abortController;
+
     try {
       setIsFinalizingVideo(true);
       setFinalizationProgress(0);
+      setFinalizeError(null);
+      setFinalizeWarnings([]);
       setFinalizationMessage(effectiveQuality === 'preview' ? 'Initializing preview render...' : 'Initializing...');
 
       const segmentsToFinalize = syncSegmentsToLoopCount(baseSegments, loopCount);
@@ -647,20 +716,34 @@ export default function Home() {
         audioBlob: options?.audioBlob,
         audioSettings: options?.audioSettings,
         quality: effectiveQuality,
+        signal: abortController.signal,
       };
 
+      let latestWarnings: string[] = [];
+      let pipelineError: string | null = null;
       const result = await finalizeVideos(
         segmentsToFinalize,
         context,
         (progress) => {
           setFinalizationProgress(progress.progress);
           setFinalizationMessage(progress.message);
+          if (progress.warnings) {
+            latestWarnings = progress.warnings;
+          }
+          if (progress.stage === 'error' && progress.error) {
+            pipelineError = progress.error;
+          }
         },
         undefined // Let the hook determine duration from metadata/content
       );
+      setFinalizeWarnings(latestWarnings);
 
       if (!result) {
-        throw new Error('Failed to finalize video');
+        if (abortController.signal.aborted) {
+          setFinalizationMessage('Render cancelled');
+          return;
+        }
+        throw new Error(pipelineError ?? 'Failed to finalize video');
       }
 
       // Update cache for future audio-only updates
@@ -687,9 +770,17 @@ export default function Home() {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       console.error('Error finalizing video:', error);
       setFinalizationMessage(`Error: ${errorMsg}`);
+      // Surface the failure in a dialog that outlives the progress modal —
+      // errors used to vanish with it, leaving users with no explanation.
+      setFinalizeError(errorMsg);
     } finally {
+      finalizeAbortRef.current = null;
       setIsFinalizingVideo(false);
     }
+  };
+
+  const handleCancelFinalize = () => {
+    finalizeAbortRef.current?.abort();
   };
 
   const handleDownloadFinalVideo = () => {
@@ -802,6 +893,13 @@ export default function Home() {
       >
         {finalVideo ? (
           <section className="w-full min-h-[calc(100vh-5rem)] space-y-8">
+            {finalizeWarnings.length > 0 && (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+                {finalizeWarnings.map((warning) => (
+                  <p key={warning}>{warning}</p>
+                ))}
+              </div>
+            )}
             <FinalVideoEditor
               finalVideo={finalVideo}
               segments={transitionVideos}
@@ -816,6 +914,9 @@ export default function Home() {
               onUpdateVideo={handleReapplyFinalVideo}
               isUpdating={isFinalizingVideo}
               onExit={() => {
+                if (finalVideo?.url) {
+                  URL.revokeObjectURL(finalVideo.url);
+                }
                 setFinalVideo(null);
                 setTransitionVideos((prev) => {
                   cleanupSegmentResources(prev);
@@ -898,6 +999,11 @@ export default function Home() {
                       className="h-full bg-primary transition-all duration-300"
                       style={{ width: `${finalizationProgress}%` }}
                     />
+                  </div>
+                  <div className="flex justify-end">
+                    <Button variant="outline" size="sm" onClick={handleCancelFinalize}>
+                      Cancel
+                    </Button>
                   </div>
                 </div>
               </DialogContent>
@@ -1041,7 +1147,11 @@ export default function Home() {
                             encodeStatusClass = 'text-muted-foreground';
                             break;
                           case 'supported':
-                            encodeStatusText = null;
+                            // Only show a note when the device will downscale
+                            encodeStatusText = encodeCapability.message?.startsWith('Will render')
+                              ? encodeCapability.message
+                              : null;
+                            encodeStatusClass = 'text-muted-foreground';
                             break;
                           case 'unsupported':
                             encodeStatusText =
@@ -1168,6 +1278,11 @@ export default function Home() {
                           Checking device encoder support for uploaded videos…
                         </p>
                       )}
+                      {!audioExportSupported && (
+                        <p className="text-center text-xs text-amber-600 dark:text-amber-400">
+                          This browser cannot encode AAC or MP3 audio — videos will export without music.
+                        </p>
+                      )}
                       {encodeWarnings.length > 0 && (
                         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
                           <p className="font-semibold">This device can&apos;t encode:</p>
@@ -1207,6 +1322,11 @@ export default function Home() {
                           style={{ width: `${finalizationProgress}%` }}
                         />
                       </div>
+                      <div className="flex justify-end">
+                        <Button variant="outline" size="sm" onClick={handleCancelFinalize}>
+                          Cancel
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1215,6 +1335,31 @@ export default function Home() {
 
           </>
         )}
+
+        {/* Render failure dialog — outlives the progress modal so errors are actually seen */}
+        <Dialog
+          open={finalizeError !== null}
+          onOpenChange={(open) => {
+            if (!open) setFinalizeError(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-5 w-5" />
+                Render failed
+              </DialogTitle>
+              <DialogDescription className="break-words">
+                {finalizeError}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setFinalizeError(null)}>
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
 
     </div>

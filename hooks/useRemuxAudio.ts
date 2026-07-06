@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback } from 'react';
-import { AudioProcessingOptions } from '@/lib/types';
+import { AudioProcessingOptions, RenderQuality } from '@/lib/types';
 import {
   Input,
   Output,
@@ -15,11 +15,19 @@ import {
   Mp4OutputFormat,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import type { VideoCodec, Rotation } from 'mediabunny';
+import { assembleAudio } from '@/lib/audio-prep';
+import { ensureAudioEncoders, audioBitrateForQuality } from '@/lib/audio-codec';
+import { throwIfAborted, isAbortError } from '@/lib/abort-utils';
 
 interface RemuxProgress {
   message: string;
   progress: number; // 0-100
+}
+
+export interface RemuxAudioOptions {
+  quality?: RenderQuality;
+  signal?: AbortSignal;
+  onProgress?: (progress: RemuxProgress) => void;
 }
 
 interface UseRemuxAudioReturn {
@@ -27,55 +35,8 @@ interface UseRemuxAudioReturn {
     finalVideoBlob: Blob,
     audioBlob: Blob,
     audioSettings: AudioProcessingOptions,
-    onProgress?: (progress: RemuxProgress) => void
+    options?: RemuxAudioOptions
   ) => Promise<Blob | null>;
-}
-
-/**
- * Apply fade in/out to an AudioBuffer in place
- */
-function applyFades(buffer: AudioBuffer, options: AudioProcessingOptions) {
-  const fadeInSeconds = Math.max(0, options.fadeIn ?? 0);
-  const fadeOutSeconds = Math.max(0, options.fadeOut ?? 0);
-  if (fadeInSeconds === 0 && fadeOutSeconds === 0) {
-    return;
-  }
-
-  const totalSamples = buffer.length;
-  if (totalSamples === 0) {
-    return;
-  }
-
-  let fadeInSamples = Math.min(totalSamples, Math.floor(fadeInSeconds * buffer.sampleRate));
-  let fadeOutSamples = Math.min(totalSamples, Math.floor(fadeOutSeconds * buffer.sampleRate));
-
-  if (fadeInSamples + fadeOutSamples > totalSamples) {
-    const scale = totalSamples / Math.max(1, fadeInSamples + fadeOutSamples);
-    fadeInSamples = Math.floor(fadeInSamples * scale);
-    fadeOutSamples = Math.floor(fadeOutSamples * scale);
-  }
-
-  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-
-    if (fadeInSamples > 0) {
-      for (let i = 0; i < fadeInSamples; i++) {
-        const gain = i / fadeInSamples;
-        channelData[i] *= gain;
-      }
-    }
-
-    if (fadeOutSamples > 0) {
-      for (let i = 0; i < fadeOutSamples; i++) {
-        const sampleIndex = totalSamples - fadeOutSamples + i;
-        if (sampleIndex < 0 || sampleIndex >= totalSamples) {
-          continue;
-        }
-        const gain = (fadeOutSamples - i) / fadeOutSamples;
-        channelData[sampleIndex] *= gain;
-      }
-    }
-  }
 }
 
 /**
@@ -88,13 +49,15 @@ export const useRemuxAudio = (): UseRemuxAudioReturn => {
       finalVideoBlob: Blob,
       audioBlob: Blob,
       audioSettings: AudioProcessingOptions,
-      onProgress?: (progress: RemuxProgress) => void
+      options: RemuxAudioOptions = {}
     ): Promise<Blob | null> => {
+      const { quality = 'full', signal, onProgress } = options;
       let videoInput: Input | null = null;
       let audioInput: Input | null = null;
 
       try {
         onProgress?.({ message: 'Analyzing video...', progress: 5 });
+        throwIfAborted(signal);
 
         // Open the final video to read encoded video packets
         videoInput = new Input({
@@ -102,63 +65,42 @@ export const useRemuxAudio = (): UseRemuxAudioReturn => {
           formats: ALL_FORMATS,
         });
 
-        const videoTracks = await videoInput.getVideoTracks();
-        if (videoTracks.length === 0) {
+        const videoTrack = await videoInput.getPrimaryVideoTrack();
+        if (!videoTrack) {
           throw new Error('No video tracks found in source video');
         }
 
-        const videoTrack = videoTracks[0];
-        const videoDuration = await videoInput.computeDuration();
-
-        // Get video codec and metadata
-        const codecString = await videoTrack.getCodecParameterString();
-        if (!codecString) {
+        const [videoCodec, rotation, videoDuration] = await Promise.all([
+          videoTrack.getCodec(),
+          videoTrack.getRotation(),
+          videoInput.computeDuration(),
+        ]);
+        if (!videoCodec) {
           throw new Error('Could not determine video codec');
         }
 
-        // Determine the base codec (avc, hevc, vp9, etc.)
-        let videoCodec: VideoCodec;
-        if (codecString.startsWith('avc')) {
-          videoCodec = 'avc';
-        } else if (codecString.startsWith('hvc') || codecString.startsWith('hev')) {
-          videoCodec = 'hevc';
-        } else if (codecString.startsWith('vp09')) {
-          videoCodec = 'vp9';
-        } else if (codecString.startsWith('vp8')) {
-          videoCodec = 'vp8';
-        } else if (codecString.startsWith('av01')) {
-          videoCodec = 'av1';
-        } else {
-          // Default to avc if unknown
-          videoCodec = 'avc';
-        }
-
-        const rotation: Rotation = (videoTrack.rotation === 0 || videoTrack.rotation === 90 ||
-          videoTrack.rotation === 180 || videoTrack.rotation === 270)
-          ? videoTrack.rotation : 0;
-
         onProgress?.({ message: 'Decoding audio...', progress: 15 });
 
-        // Decode audio from the audio blob
+        // Decode audio from the audio blob — only the range the video needs.
         audioInput = new Input({
           source: new BlobSource(audioBlob),
           formats: ALL_FORMATS,
         });
 
-        const audioTracks = await audioInput.getAudioTracks();
-        if (audioTracks.length === 0) {
+        const audioTrack = await audioInput.getPrimaryAudioTrack();
+        if (!audioTrack) {
           throw new Error('No audio tracks found in audio file');
         }
 
-        const audioTrack = audioTracks[0];
         const audioSink = new AudioBufferSink(audioTrack);
+        const neededDuration = videoDuration + Math.max(0, -(audioSettings.offset ?? 0));
 
-        // Decode audio
         const decodedBuffers: AudioBuffer[] = [];
-        for await (const wrappedBuffer of audioSink.buffers(0, videoDuration)) {
+        for await (const wrappedBuffer of audioSink.buffers(0, neededDuration)) {
           if (wrappedBuffer?.buffer) {
             decodedBuffers.push(wrappedBuffer.buffer);
           }
+          throwIfAborted(signal);
         }
 
         if (decodedBuffers.length === 0) {
@@ -167,59 +109,28 @@ export const useRemuxAudio = (): UseRemuxAudioReturn => {
 
         onProgress?.({ message: 'Processing audio...', progress: 30 });
 
-        // Merge decoded buffers and apply fades
-        const sampleRate = decodedBuffers[0].sampleRate;
-        const channels = decodedBuffers[0].numberOfChannels;
-        const totalSamples = Math.max(1, Math.floor(videoDuration * sampleRate));
-
-        const mergedBuffer = new AudioBuffer({
-          length: totalSamples,
-          numberOfChannels: channels,
-          sampleRate,
+        // Offset + loop + downmix + fades — same implementation as the full
+        // render path, so fast audio updates behave identically.
+        const mergedBuffer = assembleAudio(decodedBuffers, videoDuration, {
+          offset: audioSettings.offset,
+          fadeIn: audioSettings.fadeIn,
+          fadeOut: audioSettings.fadeOut,
         });
-
-        // Copy decoded audio to merged buffer
-        let writeOffset = 0;
-        for (const buffer of decodedBuffers) {
-          const remainingSamples = totalSamples - writeOffset;
-          if (remainingSamples <= 0) break;
-
-          const writeLength = Math.min(buffer.length, remainingSamples);
-          for (let channel = 0; channel < channels; channel++) {
-            const channelData = buffer.getChannelData(channel).subarray(0, writeLength);
-            mergedBuffer.getChannelData(channel).set(channelData, writeOffset);
-          }
-          writeOffset += writeLength;
+        if (!mergedBuffer) {
+          throw new Error('Audio file contains no audio data');
         }
-
-        // Loop audio if needed to fill video duration
-        while (writeOffset < totalSamples && decodedBuffers.length > 0) {
-          for (const buffer of decodedBuffers) {
-            const remainingSamples = totalSamples - writeOffset;
-            if (remainingSamples <= 0) break;
-
-            const writeLength = Math.min(buffer.length, remainingSamples);
-            for (let channel = 0; channel < channels; channel++) {
-              const channelData = buffer.getChannelData(channel).subarray(0, writeLength);
-              mergedBuffer.getChannelData(channel).set(channelData, writeOffset);
-            }
-            writeOffset += writeLength;
-          }
-        }
-
-        // Apply fade in/out
-        applyFades(mergedBuffer, audioSettings);
 
         onProgress?.({ message: 'Creating output...', progress: 40 });
 
         // Create output with passthrough video source
         const videoSource = new EncodedVideoPacketSource(videoCodec);
 
-        // Detect best audio codec
+        await ensureAudioEncoders();
+        const audioBitrate = audioBitrateForQuality(quality);
         const audioCodec = await getFirstEncodableAudioCodec(['aac', 'mp3'], {
-          numberOfChannels: channels,
-          sampleRate,
-          bitrate: 128000,
+          numberOfChannels: mergedBuffer.numberOfChannels,
+          sampleRate: mergedBuffer.sampleRate,
+          bitrate: audioBitrate,
         });
 
         if (!audioCodec) {
@@ -228,7 +139,7 @@ export const useRemuxAudio = (): UseRemuxAudioReturn => {
 
         const audioSource = new AudioBufferSource({
           codec: audioCodec,
-          bitrate: 128000,
+          bitrate: audioBitrate,
         });
 
         const bufferTarget = new BufferTarget();
@@ -239,54 +150,55 @@ export const useRemuxAudio = (): UseRemuxAudioReturn => {
 
         output.addVideoTrack(videoSource, { rotation });
         output.addAudioTrack(audioSource);
-        await output.start();
 
-        onProgress?.({ message: 'Copying video packets...', progress: 50 });
+        try {
+          await output.start();
 
-        // Create packet sink to read encoded video packets
-        const packetSink = new EncodedPacketSink(videoTrack);
+          onProgress?.({ message: 'Copying video packets...', progress: 50 });
 
-        // Copy all video packets directly (no re-encoding)
-        let packetCount = 0;
-        let isFirstPacket = true;
+          const packetSink = new EncodedPacketSink(videoTrack);
+          const trackConfig = await videoTrack.getDecoderConfig();
+          const packetStats = await videoTrack.computePacketStats().catch(() => null);
+          const totalPackets = packetStats?.packetCount ?? null;
 
-        // Get decoder config from track for first packet metadata
-        const trackConfig = await videoTrack.getDecoderConfig();
+          let packetCount = 0;
+          let isFirstPacket = true;
 
-        for await (const packet of packetSink.packets()) {
-          // Pass decoder config with first packet
-          if (isFirstPacket && trackConfig) {
-            await videoSource.add(packet, { decoderConfig: trackConfig });
-            isFirstPacket = false;
-          } else {
-            await videoSource.add(packet);
+          for await (const packet of packetSink.packets()) {
+            throwIfAborted(signal);
+            if (isFirstPacket && trackConfig) {
+              await videoSource.add(packet, { decoderConfig: trackConfig });
+              isFirstPacket = false;
+            } else {
+              await videoSource.add(packet);
+            }
+
+            packetCount++;
+            if (packetCount % 30 === 0) {
+              const progressValue = totalPackets
+                ? 50 + (packetCount / totalPackets) * 30
+                : Math.min(80, 50 + (packetCount / 300) * 30);
+              onProgress?.({
+                message: `Copying video packets... (${packetCount})`,
+                progress: Math.min(80, progressValue),
+              });
+            }
           }
 
-          packetCount++;
+          onProgress?.({ message: 'Encoding audio...', progress: 85 });
 
-          // Update progress periodically
-          if (packetCount % 30 === 0) {
-            const progressValue = 50 + (packetCount / 300) * 30; // Rough estimate
-            onProgress?.({
-              message: `Copying video packets... (${packetCount})`,
-              progress: Math.min(80, progressValue)
-            });
-          }
+          await audioSource.add(mergedBuffer as AudioBuffer);
+          await audioSource.close();
+          await videoSource.close();
+
+          onProgress?.({ message: 'Finalizing...', progress: 95 });
+          await output.finalize();
+        } catch (error) {
+          await output.cancel().catch(() => {});
+          throw error;
         }
 
-        onProgress?.({ message: 'Encoding audio...', progress: 85 });
-
-        // Add processed audio
-        await audioSource.add(mergedBuffer);
-        await audioSource.close();
-        await videoSource.close();
-
-        onProgress?.({ message: 'Finalizing...', progress: 95 });
-
-        // Finalize output
-        await output.finalize();
         const buffer = bufferTarget.buffer;
-
         if (!buffer) {
           throw new Error('Failed to generate output buffer');
         }
@@ -295,11 +207,14 @@ export const useRemuxAudio = (): UseRemuxAudioReturn => {
 
         onProgress?.({
           message: `Audio updated (${(outputBlob.size / 1024 / 1024).toFixed(2)}MB)`,
-          progress: 100
+          progress: 100,
         });
 
         return outputBlob;
       } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         console.error('Remux error:', error);
         throw new Error(`Failed to remux audio: ${errorMessage}`);

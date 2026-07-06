@@ -1,44 +1,68 @@
 import type { VideoEncodingConfig } from 'mediabunny';
-import { DEFAULT_KEYFRAME_INTERVAL, MAX_OUTPUT_FPS } from './speed-curve-config';
-
-// Baseline profile, level 4.0 keeps reference frames minimal for Firefox forks
-// Note: Using '00' for constraint flags instead of 'C0' for wider hardware encoder compatibility
-export const AVC_LEVEL_4_0 = 'avc1.420028';
-// High profile, level 5.1 for 4K support
-export const AVC_LEVEL_5_1 = 'avc1.640033';
+import { canEncodeVideo } from 'mediabunny';
+import { DEFAULT_KEYFRAME_INTERVAL } from './speed-curve-config';
+import type { EncodeTier } from './encode-planner';
 
 /**
- * Builds a stable AVC encoding config that works across Firefox/WebKit decoders.
- * Forces the encoder to emit AVC configuration records and keeps bitrate/keyframe
- * defaults in one place.
+ * Shared encoder options applied to every tier. `hardwareAcceleration` is
+ * deliberately left at 'no-preference' (mediabunny's recommendation): it lets
+ * the browser pick hardware when available and silently fall back to software
+ * when not, instead of failing on machines without a hardware H.264 encoder.
  */
-export const createAvcEncodingConfig = (
-  bitrate: number,
-  width?: number,
-  height?: number,
-  codecString: string = AVC_LEVEL_4_0,
-  framerate?: number,
-  useHardwareAcceleration: boolean = true
-): VideoEncodingConfig => ({
-  codec: 'avc',
-  bitrate,
+const COMMON_OPTIONS = {
   keyFrameInterval: DEFAULT_KEYFRAME_INTERVAL,
   bitrateMode: 'variable',
   latencyMode: 'quality',
-  fullCodecString: codecString,
-  hardwareAcceleration: useHardwareAcceleration ? 'prefer-hardware' : 'prefer-software',
+  hardwareAcceleration: 'no-preference',
+} as const;
+
+/**
+ * Build the mediabunny encoding config for a planned tier. When the tier's
+ * dimensions differ from the source frames, mediabunny resizes each sample
+ * on a canvas before encoding (`transform`), so the encoder genuinely
+ * receives tier-sized frames — downscale fallbacks work on every browser
+ * rather than relying on encoder-side scaling.
+ */
+export const createTierEncodingConfig = (tier: EncodeTier): VideoEncodingConfig => ({
+  codec: 'avc',
+  bitrate: tier.bitrate,
+  fullCodecString: tier.codecString,
+  ...COMMON_OPTIONS,
+  ...(tier.needsResize
+    ? { transform: { width: tier.width, height: tier.height, fit: 'contain' as const } }
+    : {}),
   onEncoderConfig: (config) => {
     config.avc = { ...(config.avc ?? {}), format: 'avc' };
-    if (!config.latencyMode) {
-      config.latencyMode = 'quality';
+    if (tier.frameRate > 0) {
+      config.framerate = tier.frameRate;
     }
-    if (framerate && framerate > 0) {
-      config.framerate = framerate;
-    } else if (!config.framerate) {
-      config.framerate = MAX_OUTPUT_FPS;
-    }
-    config.bitrate = bitrate;
-    if (width) config.width = width;
-    if (height) config.height = height;
   },
 });
+
+/**
+ * Probe whether this machine can encode a tier, using the SAME options the
+ * real encoder will be configured with. Probe/encode parity matters: probing
+ * a laxer config than the one used to encode is how "supported" machines
+ * fail minutes into a render.
+ */
+export const canEncodeTier = (tier: EncodeTier): Promise<boolean> =>
+  canEncodeVideo('avc', {
+    width: tier.width,
+    height: tier.height,
+    bitrate: tier.bitrate,
+    fullCodecString: tier.codecString,
+    ...COMMON_OPTIONS,
+  });
+
+/**
+ * Return the first tier of the ladder this machine can actually encode, or
+ * null when none fit (caller should surface a clear error before starting).
+ */
+export async function selectSupportedTier(tiers: EncodeTier[]): Promise<EncodeTier | null> {
+  for (const tier of tiers) {
+    if (await canEncodeTier(tier)) {
+      return tier;
+    }
+  }
+  return null;
+}

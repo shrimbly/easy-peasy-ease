@@ -87,6 +87,8 @@ export interface FinalizeContext {
   audioBlob?: Blob;
   audioSettings?: AudioProcessingOptions;
   quality?: RenderQuality;
+  /** Abort to cancel a long-running finalize */
+  signal?: AbortSignal;
 }
 
 /**
