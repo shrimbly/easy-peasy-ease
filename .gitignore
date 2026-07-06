@@ -58,3 +58,7 @@ cloudflared-config.yml
 tunnel_list.txt
 quick_tunnel.log
 cloudflared.exe
+# E2E artifacts
+e2e/fixtures/
+e2e/out/
+e2e/node_modules/

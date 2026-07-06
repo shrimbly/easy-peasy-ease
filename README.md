@@ -58,4 +58,7 @@ npm run dev      # Start development server (localhost:3000)
 npm run build    # Build for production
 npm run lint     # Run ESLint
 npm test         # Run Vitest
-``` 
+```
+
+There is also a real-browser end-to-end suite that drives the full pipeline
+through actual WebCodecs and validates the produced MP4s — see [`e2e/`](e2e/README.md).
