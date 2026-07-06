@@ -194,10 +194,24 @@ const PREVIEW_BOXES: TierSpec[] = [
 export const PREVIEW_TIER_BITRATE = 4_000_000;
 
 /**
+ * Full-quality profile ladder, most to least capable. High profile gives the
+ * best quality-per-bit, but not every WebCodecs encoder supports it — notably
+ * Firefox's OpenH264 software fallback (used when there is no platform/hardware
+ * H.264 encoder) only does Constrained Baseline. Falling from High -> Main ->
+ * Baseline at each resolution keeps such machines producing output instead of
+ * failing outright.
+ */
+const FULL_QUALITY_PROFILES: AvcProfile[] = ['high', 'main', 'baseline'];
+
+/**
  * Build the ordered ladder of encode tiers for a source video. The first
- * entry is the best-quality plan; later entries progressively trade
- * resolution and frame rate for compatibility so weaker machines still
+ * entry is the best-quality plan; later entries progressively trade profile,
+ * frame rate, and resolution for compatibility so weaker machines still
  * produce the best result they are capable of.
+ *
+ * Ordering (full quality): resolution box (outer) -> frame rate -> AVC profile.
+ * This keeps resolution and frame rate as high as possible, only dropping the
+ * profile (the least visible tradeoff) before downscaling.
  *
  * Note the bounding boxes are square (e.g. 1920×1920) so portrait sources
  * are treated symmetrically to landscape ones.
@@ -209,7 +223,9 @@ export function buildEncodeTiers(
 ): EncodeTier[] {
   const isPreview = quality === 'preview';
   const boxes = isPreview ? PREVIEW_BOXES : FULL_QUALITY_BOXES;
-  const profile: AvcProfile = isPreview ? 'baseline' : 'high';
+  // Preview stays Baseline-only (fast, universally supported). Full quality
+  // prefers High but degrades gracefully to Main/Baseline.
+  const profiles: AvcProfile[] = isPreview ? ['baseline'] : FULL_QUALITY_PROFILES;
 
   const tiers: EncodeTier[] = [];
   const seen = new Set<string>();
@@ -218,27 +234,29 @@ export function buildEncodeTiers(
     const { width, height } = scaleToFit(source.width, source.height, box.maxWidth, box.maxHeight);
 
     for (const frameRate of frameRates) {
-      const key = `${width}x${height}@${frameRate}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      for (const profile of profiles) {
+        const key = `${width}x${height}@${frameRate}:${profile}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
 
-      const bitrate = isPreview
-        ? Math.min(PREVIEW_TIER_BITRATE, computeTargetBitrate(width, height, frameRate, source.bitrate, profile))
-        : computeTargetBitrate(width, height, frameRate, source.bitrate, profile);
+        const bitrate = isPreview
+          ? Math.min(PREVIEW_TIER_BITRATE, computeTargetBitrate(width, height, frameRate, source.bitrate, profile))
+          : computeTargetBitrate(width, height, frameRate, source.bitrate, profile);
 
-      const level = pickAvcLevel(width, height, frameRate, bitrate, profile);
-      if (!level) continue;
+        const level = pickAvcLevel(width, height, frameRate, bitrate, profile);
+        if (!level) continue;
 
-      tiers.push({
-        label: `${box.label} ${frameRate}fps`,
-        width,
-        height,
-        frameRate,
-        bitrate,
-        profile,
-        codecString: buildAvcCodecString(profile, level.levelIdc),
-        needsResize: width < Math.floor(source.width) || height < Math.floor(source.height),
-      });
+        tiers.push({
+          label: `${box.label} ${frameRate}fps ${profile}`,
+          width,
+          height,
+          frameRate,
+          bitrate,
+          profile,
+          codecString: buildAvcCodecString(profile, level.levelIdc),
+          needsResize: width < Math.floor(source.width) || height < Math.floor(source.height),
+        });
+      }
     }
   }
 

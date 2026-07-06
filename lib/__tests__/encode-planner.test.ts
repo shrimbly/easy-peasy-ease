@@ -271,7 +271,7 @@ describe('scaleToFit', () => {
 
 describe('buildEncodeTiers', () => {
   const noDuplicateKeys = (tiers: EncodeTier[]) => {
-    const keys = tiers.map((t) => `${t.width}x${t.height}@${t.frameRate}`);
+    const keys = tiers.map((t) => `${t.width}x${t.height}@${t.frameRate}:${t.profile}`);
     expect(new Set(keys).size).toBe(keys.length);
   };
 
@@ -316,10 +316,27 @@ describe('buildEncodeTiers', () => {
       }
     });
 
-    it('uses the high profile for every tier', () => {
+    it('prefers high profile but degrades to main and baseline fallbacks', () => {
+      // The best tier is High profile...
+      expect(tiers[0].profile).toBe('high');
+      expect(tiers[0].codecString.startsWith('avc1.6400')).toBe(true);
+      // ...and every resolution/fps also offers Main and Baseline fallbacks so
+      // encoders without High-profile support (e.g. Firefox openh264) still work.
+      const native = tiers.filter((t) => t.width === 3840 && t.height === 2160 && t.frameRate === 60);
+      expect(native.map((t) => t.profile)).toEqual(['high', 'main', 'baseline']);
+      expect(native.find((t) => t.profile === 'baseline')?.codecString.startsWith('avc1.4200')).toBe(true);
+      expect(native.find((t) => t.profile === 'main')?.codecString.startsWith('avc1.4d00')).toBe(true);
+    });
+
+    it('orders profiles high before main before baseline within a resolution/fps', () => {
+      const rank = { high: 0, main: 1, baseline: 2 } as const;
+      const groups = new Map<string, number[]>();
       for (const tier of tiers) {
-        expect(tier.profile).toBe('high');
-        expect(tier.codecString.startsWith('avc1.6400')).toBe(true);
+        const key = `${tier.width}x${tier.height}@${tier.frameRate}`;
+        (groups.get(key) ?? groups.set(key, []).get(key)!).push(rank[tier.profile]);
+      }
+      for (const ranks of groups.values()) {
+        expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
       }
     });
 
@@ -332,11 +349,12 @@ describe('buildEncodeTiers', () => {
         60, 30,
       ]);
       noDuplicateKeys(hd);
-      // Original box and 1080p box both resolve to 1920x1080; only one pair survives
-      expect(hd).toHaveLength(4);
-      expect(hd[0].label).toBe('Original 60fps');
-      expect(hd.filter((t) => t.width === 1920 && t.height === 1080)).toHaveLength(2);
-      expect(hd.filter((t) => t.width === 1280 && t.height === 720)).toHaveLength(2);
+      // Original box and 1080p box both resolve to 1920x1080; only one set of
+      // (2 frame rates x 3 profiles) survives for that resolution.
+      expect(hd).toHaveLength(12);
+      expect(hd[0].label).toBe('Original 60fps high');
+      expect(hd.filter((t) => t.width === 1920 && t.height === 1080)).toHaveLength(6);
+      expect(hd.filter((t) => t.width === 1280 && t.height === 720)).toHaveLength(6);
     });
 
     it('keeps tier bitrates level-conformant', () => {
@@ -406,25 +424,27 @@ describe('buildEncodeTiers', () => {
 
     it('keeps 1080x1920 untouched since it fits the 1920x1920 box', () => {
       const native = tiers.filter((t) => t.width === 1080 && t.height === 1920);
-      expect(native).toHaveLength(2);
+      expect(native).toHaveLength(6); // 2 frame rates x 3 profiles
       for (const tier of native) {
         expect(tier.needsResize).toBe(false);
       }
       expect(tiers[0].width).toBe(1080);
       expect(tiers[0].height).toBe(1920);
       expect(tiers[0].frameRate).toBe(60);
+      expect(tiers[0].profile).toBe('high');
     });
 
     it('dedupes the 1080p box against the untouched original', () => {
       noDuplicateKeys(tiers);
-      // Original + 1080p box collapse into one pair; 720p box adds 720x1280
-      expect(tiers).toHaveLength(4);
+      // Original + 1080p box collapse into one set; 720p box adds 720x1280.
+      // (2 frame rates x 3 profiles) x 2 resolutions = 12
+      expect(tiers).toHaveLength(12);
       expect(tiers.some((t) => t.label.startsWith('1080p'))).toBe(false);
     });
 
     it('scales the portrait source into the 720p square box as 720x1280', () => {
       const downs = tiers.filter((t) => t.width === 720 && t.height === 1280);
-      expect(downs).toHaveLength(2);
+      expect(downs).toHaveLength(6); // 2 frame rates x 3 profiles
       for (const tier of downs) {
         expect(tier.needsResize).toBe(true);
       }
@@ -450,19 +470,22 @@ describe('buildEncodeTiers', () => {
         expect(areas[i]).toBeLessThanOrEqual(areas[i - 1]);
       }
       const native = tiers.filter((t) => t.width === 3840);
-      expect(native.map((t) => t.frameRate)).toEqual([60, 30]);
+      // 60fps group (3 profiles) precedes the 30fps group (3 profiles)
+      expect(native.map((t) => t.frameRate)).toEqual([60, 60, 60, 30, 30, 30]);
     });
 
-    it('labels tiers with box name and frame rate', () => {
+    it('labels tiers with box name, frame rate, and profile', () => {
       const tiers = buildEncodeTiers({ width: 3840, height: 2160 }, 'full', [60, 30]);
-      expect(tiers.map((t) => t.label)).toEqual([
-        'Original 60fps',
-        'Original 30fps',
-        '1080p 60fps',
-        '1080p 30fps',
-        '720p 60fps',
-        '720p 30fps',
+      // Spot-check the first resolution/fps group degrades across profiles
+      expect(tiers.slice(0, 3).map((t) => t.label)).toEqual([
+        'Original 60fps high',
+        'Original 60fps main',
+        'Original 60fps baseline',
       ]);
+      // Every label carries its profile suffix
+      for (const tier of tiers) {
+        expect(tier.label.endsWith(tier.profile)).toBe(true);
+      }
     });
   });
 });

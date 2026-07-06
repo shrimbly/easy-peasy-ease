@@ -295,10 +295,19 @@ function FinalVideoEditorComponent({
     prevAudioSettingsRef.current = { ...audioSettings };
     audioFileChangedRef.current = false;
 
+    // Audio-only changes must not re-encode the video at a different quality:
+    // that would both downgrade the current result (e.g. after a full-quality
+    // download while the preview toggle is still on) and defeat the fast/medium
+    // reuse paths, which are keyed on quality. Preserve the quality the current
+    // video was actually rendered at; the toggle only governs full re-renders.
+    const isAudioOnly = updateHint === 'audio-file' || updateHint === 'audio-fade';
+    const effectiveQuality =
+      qualityOverride ?? (isAudioOnly ? currentRenderQuality ?? renderQuality : renderQuality);
+
     onUpdateVideo({
       audioBlob: audioFile ?? undefined,
       audioSettings,
-      quality: qualityOverride ?? renderQuality,
+      quality: effectiveQuality,
       updateHint,
     });
     setUpdatePromptReason(null);
