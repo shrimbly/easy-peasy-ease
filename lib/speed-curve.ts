@@ -192,6 +192,14 @@ export function warpTime(
     ? getEasingFunction(easingFunction)
     : easingFunction;
 
+  // Degenerate inputs produce a degenerate (but finite) mapping
+  if (
+    !Number.isFinite(inputDuration) || inputDuration <= 0 ||
+    !Number.isFinite(outputDuration) || outputDuration <= 0
+  ) {
+    return 0;
+  }
+
   // Normalize original time to 0-1 range
   const t = originalTime / inputDuration;
 
@@ -287,6 +295,13 @@ export function validateWarpFunction(
   tolerance: number = 0.001
 ): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
+
+  if (!Number.isFinite(inputDuration) || inputDuration <= 0) {
+    return { valid: false, errors: ['inputDuration must be a positive, finite number'] };
+  }
+  if (!Number.isFinite(outputDuration) || outputDuration <= 0) {
+    return { valid: false, errors: ['outputDuration must be a positive, finite number'] };
+  }
 
   // Check start point
   const startWarp = warpTime(0, inputDuration, outputDuration, easingFunction);

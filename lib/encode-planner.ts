@@ -192,7 +192,6 @@ const PREVIEW_BOXES: TierSpec[] = [
 ];
 
 export const PREVIEW_TIER_BITRATE = 4_000_000;
-export const PREVIEW_TIER_FPS = 30;
 
 /**
  * Build the ordered ladder of encode tiers for a source video. The first

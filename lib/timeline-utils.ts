@@ -50,8 +50,9 @@ export function getCurrentSegment(
   segments: TransitionVideo[]
 ): TransitionVideo | null {
   const totalDuration = getTotalDuration(segments);
+  // Double-modulo keeps negative times wrapping into the loop as well
   const normalizedTime =
-    totalDuration > 0 ? currentTime % totalDuration : currentTime;
+    totalDuration > 0 ? ((currentTime % totalDuration) + totalDuration) % totalDuration : currentTime;
   const boundaries = calculateSegmentBoundaries(segments);
 
   for (const boundary of boundaries) {
@@ -88,8 +89,9 @@ export function pixelsToTime(pixels: number, pixelsPerSecond: number): number {
  * Format time in seconds to MM:SS format
  */
 export function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  const mins = Math.floor(safeSeconds / 60);
+  const secs = Math.floor(safeSeconds % 60);
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 

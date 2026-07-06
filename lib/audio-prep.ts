@@ -39,8 +39,11 @@ const MINIMUM_AUDIO_DURATION = 0.1; // seconds
 const defaultFactory: AudioBufferFactory = (options) => new AudioBuffer(options);
 
 /**
- * ITU-style downmix of multichannel audio to stereo. WebAudio channel order
- * for 5.1 is [FL, FR, FC, LFE, SL, SR]. Buffers with 1 or 2 channels are
+ * ITU-style downmix of multichannel audio to stereo, respecting the WebAudio
+ * canonical channel orders: 3ch [L, R, C], quad [FL, FR, BL, BR],
+ * 5ch [FL, FR, FC, BL, BR], 5.1 [FL, FR, FC, LFE, SL, SR] (LFE omitted from
+ * the downmix, as is conventional). Layouts beyond 6 channels use the first
+ * six under the 5.1 interpretation. Buffers with 1 or 2 channels are
  * returned untouched.
  */
 export function downmixToStereo(
@@ -62,16 +65,31 @@ export function downmixToStereo(
 
   const fl = buffer.getChannelData(0);
   const fr = buffer.getChannelData(1);
-  const fc = channels > 2 ? buffer.getChannelData(2) : null;
-  // Channel 3 is LFE in the 5.1 layout; conventionally omitted from downmix.
-  const sl = channels > 4 ? buffer.getChannelData(4) : null;
-  const sr = channels > 5 ? buffer.getChannelData(5) : null;
+  let fc: Float32Array | null = null;
+  let bl: Float32Array | null = null;
+  let br: Float32Array | null = null;
+
+  if (channels === 3) {
+    fc = buffer.getChannelData(2);
+  } else if (channels === 4) {
+    bl = buffer.getChannelData(2);
+    br = buffer.getChannelData(3);
+  } else if (channels === 5) {
+    fc = buffer.getChannelData(2);
+    bl = buffer.getChannelData(3);
+    br = buffer.getChannelData(4);
+  } else {
+    // 5.1 and larger: [FL, FR, FC, LFE, SL, SR, ...]
+    fc = buffer.getChannelData(2);
+    bl = buffer.getChannelData(4);
+    br = buffer.getChannelData(5);
+  }
 
   const clamp = (v: number) => Math.max(-1, Math.min(1, v));
   for (let i = 0; i < buffer.length; i++) {
     const center = fc ? 0.7071 * fc[i] : 0;
-    left[i] = clamp(fl[i] + center + (sl ? 0.7071 * sl[i] : 0));
-    right[i] = clamp(fr[i] + center + (sr ? 0.7071 * sr[i] : 0));
+    left[i] = clamp(fl[i] + center + (bl ? 0.7071 * bl[i] : 0));
+    right[i] = clamp(fr[i] + center + (br ? 0.7071 * br[i] : 0));
   }
   return out;
 }
@@ -104,7 +122,9 @@ export function applyFades(
     }
     for (let i = 0; i < fadeOutSamples; i++) {
       const sampleIndex = totalSamples - fadeOutSamples + i;
-      data[sampleIndex] *= (fadeOutSamples - i) / fadeOutSamples;
+      // Mirrors the fade-in ramp and reaches exactly 0 on the final sample —
+      // a ramp that stops short of zero leaves an audible click at the end.
+      data[sampleIndex] *= (fadeOutSamples - 1 - i) / fadeOutSamples;
     }
   }
 }
@@ -140,9 +160,11 @@ export function assembleAudio(
   const offsetSamples = Math.floor(offsetSeconds * sampleRate);
 
   // Positive offset: start writing later (leading silence).
-  // Negative offset: skip source samples from the front.
+  // Negative offset: skip source samples from the front. Skips beyond the
+  // track's length wrap around (the track is treated as a loop), rather
+  // than silently ignoring the trim.
   let writeOffset = offsetSamples > 0 ? Math.min(offsetSamples, totalSamples) : 0;
-  let sourceSkip = offsetSamples < 0 ? -offsetSamples : 0;
+  let sourceSkip = offsetSamples < 0 ? (-offsetSamples) % totalSourceSamples : 0;
 
   let chunkIndex = 0;
   let chunkOffset = 0;
