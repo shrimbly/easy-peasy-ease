@@ -336,30 +336,32 @@ export const useStitchVideos = (): UseStitchVideosReturn => {
                 let clipSampleCount = 0;
 
                 for await (const sample of sink.samples(probe.firstTimestamp, probe.endTimestamp)) {
-                  throwIfAborted(signal);
-                  const normalized = sample.timestamp - probe.firstTimestamp;
-                  const snapped =
-                    Math.round((segmentBase + normalized) / frameInterval) * frameInterval;
+                  try {
+                    throwIfAborted(signal);
+                    const normalized = sample.timestamp - probe.firstTimestamp;
+                    const snapped =
+                      Math.round((segmentBase + normalized) / frameInterval) * frameInterval;
 
-                  // Duplicate frames landing on an occupied slot are skipped
-                  // (sources faster than the output grid).
-                  if (snapped <= highestWrittenTimestamp) {
+                    // Duplicate frames landing on an occupied slot are skipped
+                    // (sources faster than the output grid).
+                    if (snapped <= highestWrittenTimestamp) {
+                      continue;
+                    }
+
+                    sample.setTimestamp(snapped);
+                    sample.setDuration(frameInterval);
+                    if (isFirstSampleOfClip) {
+                      // Key frame at every clip boundary: better seeking and no
+                      // reliance on inter-frame prediction across the seam.
+                      sample.setEncodeOptions({ keyFrame: true });
+                      isFirstSampleOfClip = false;
+                    }
+                    await videoSource.add(sample);
+                    highestWrittenTimestamp = snapped;
+                    clipSampleCount++;
+                  } finally {
                     sample.close();
-                    continue;
                   }
-
-                  sample.setTimestamp(snapped);
-                  sample.setDuration(frameInterval);
-                  if (isFirstSampleOfClip) {
-                    // Key frame at every clip boundary: better seeking and no
-                    // reliance on inter-frame prediction across the seam.
-                    sample.setEncodeOptions({ keyFrame: true });
-                    isFirstSampleOfClip = false;
-                  }
-                  await videoSource.add(sample);
-                  highestWrittenTimestamp = snapped;
-                  sample.close();
-                  clipSampleCount++;
 
                   if (clipSampleCount % 10 === 0) {
                     const denominator = probe.packetCount ?? 300;

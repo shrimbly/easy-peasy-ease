@@ -1,6 +1,6 @@
 # easy-peasy-ease
 
-Client-side video editor that stitches video segments into seamless loops with custom ease-in/out speed curves and background music. This is a weekend project and has plenty of issues, for best results use desktop chrome or firefox, there is a known issue on Android chrome where frames at the end of each clip are dropped. I am not planning to maintain this project long term. 
+Client-side video editor that stitches video segments into seamless loops with custom ease-in/out speed curves and background music. Started as a weekend project; for best results use desktop Chrome, but the pipeline now adapts to what each machine can do (see Reliability below). I am not planning to maintain this project long term.
 
 ## Workflow
 
@@ -10,7 +10,7 @@ Upload video segments → Order and trim → Apply speed curves → Stitch into 
 
 - **Framework**: Next.js 16 App Router + React 19 + TypeScript 5
 - **Styling**: Tailwind CSS 4 + shadcn/ui components + CSS variables
-- **Video Engine**: Mediabunny (client-side WASM/JS processing)
+- **Video Engine**: Mediabunny 1.50 (client-side WebCodecs/WASM processing)
 - **State Management**: React hooks + custom hooks (`useFinalizeVideo`, `useVideoPlayback`, `useAudioVisualization`)
 
 ## Getting Started
@@ -26,6 +26,30 @@ npm run dev
 - **Speed Curves**: Apply preset or custom Bezier curves for organic motion
 - **Audio Mixing**: Mix background music with video client-side
 - **Session-only**: No persistent storage; all data is ephemeral
+
+## Reliability
+
+The pipeline plans encoding around what the current machine actually supports:
+
+- **Capability-probed tier ladder** (`lib/encode-planner.ts`): output resolution,
+  frame rate, AVC profile/level, and bitrate are planned per source and probed
+  with the exact production encoder config before a render starts. Machines
+  that can't encode native resolution fall back to 1080p/720p (with real frame
+  resizing) instead of failing mid-render.
+- **Lossless stitching**: speed-curved clips share one encoding config, so the
+  stitcher copies encoded packets instead of re-encoding — no second
+  generation loss and roughly half the encode work. Mixed sources fall back to
+  a planned re-encode with keyframes forced at clip boundaries.
+- **Audio everywhere**: an AAC WASM polyfill registers on browsers without a
+  native encoder (Firefox, Linux Chromium). Multichannel audio downmixes to
+  stereo. When audio still can't be processed, the render completes and tells
+  you, instead of silently producing a mute video.
+- **Android end-of-clip frame drops** (the old known issue): mitigated by the
+  packet-passthrough stitcher plus hold-frame handling for decoder tail
+  failures in the speed-curve stage. If you still see it on your device,
+  please open an issue with the device/browser version.
+- Renders are cancellable, keep the screen awake, guard against accidental
+  tab closes, and report failures in a visible dialog.
 
 ## Commands
 

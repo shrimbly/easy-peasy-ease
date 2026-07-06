@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 
 export interface WaveformData {
-  channelData: Float32Array[];
   sampleRate: number;
   duration: number;
   peaks: number[];
@@ -91,11 +90,12 @@ export function useAudioVisualization(audioFile: File | Blob | null) {
           audioBuffer.getChannelData(i)
         );
 
-        // Calculate peaks for visualization (downsample for performance)
+        // Calculate peaks for visualization (downsample for performance).
+        // Only the peaks are kept — caching the full decoded PCM held every
+        // song ever previewed in memory for the whole session.
         const peaks = calculatePeaks(channelData, 256);
 
         const nextWaveform: WaveformData = {
-          channelData,
           sampleRate: audioBuffer.sampleRate,
           duration: audioBuffer.duration,
           peaks,

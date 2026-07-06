@@ -101,12 +101,34 @@ export function formatTime(seconds: number): string {
  */
 export async function extractVideoThumbnail(
   videoUrl: string,
-  timeInSeconds: number = 0
+  timeInSeconds: number = 0,
+  timeoutMs: number = 10_000
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     video.crossOrigin = 'anonymous';
     video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+
+    let settled = false;
+    const cleanup = () => {
+      video.removeAttribute('src');
+      video.load();
+    };
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      fn();
+    };
+    // Some browsers (iOS Safari in particular) never fire loadeddata/seeked
+    // for certain sources; without a timeout this promise hangs forever.
+    const timer = setTimeout(
+      () => settle(() => reject(new Error('Timed out extracting video thumbnail'))),
+      timeoutMs
+    );
 
     video.addEventListener('loadeddata', () => {
       // Seek to the specified time
@@ -122,7 +144,7 @@ export async function extractVideoThumbnail(
 
         const ctx = canvas.getContext('2d');
         if (!ctx) {
-          reject(new Error('Could not get canvas context'));
+          settle(() => reject(new Error('Could not get canvas context')));
           return;
         }
 
@@ -130,16 +152,14 @@ export async function extractVideoThumbnail(
 
         // Convert to data URL
         const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-        resolve(dataUrl);
+        settle(() => resolve(dataUrl));
       } catch (error) {
-        reject(error);
-      } finally {
-        video.src = '';
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     });
 
-    video.addEventListener('error', (e) => {
-      reject(new Error(`Failed to load video: ${e}`));
+    video.addEventListener('error', () => {
+      settle(() => reject(new Error('Failed to load video for thumbnail')));
     });
 
     video.src = videoUrl;

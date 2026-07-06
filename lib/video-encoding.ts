@@ -29,7 +29,13 @@ export const createTierEncodingConfig = (tier: EncodeTier): VideoEncodingConfig 
   fullCodecString: tier.codecString,
   ...COMMON_OPTIONS,
   ...(tier.needsResize
-    ? { transform: { width: tier.width, height: tier.height, fit: 'contain' as const } }
+    ? {
+        // sizeChangeBehavior must allow varying raw sample sizes: mediabunny
+        // checks size constancy on the RAW sample before the transform
+        // normalizes it, so mixed-size inputs throw under the default 'deny'.
+        sizeChangeBehavior: 'passThrough' as const,
+        transform: { width: tier.width, height: tier.height, fit: 'contain' as const },
+      }
     : {}),
   onEncoderConfig: (config) => {
     config.avc = { ...(config.avc ?? {}), format: 'avc' };

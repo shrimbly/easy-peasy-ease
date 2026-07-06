@@ -25,13 +25,21 @@
   - `VideoTimeline.tsx`: Timeline visualization.
   - `CubicBezierEditor.tsx`: Speed curve editor.
 - `hooks/`:
-  - `useFinalizeVideo.ts`: Orchestrates the stitching and easing process using `mediabunny`.
+  - `useFinalizeVideo.ts`: Orchestrates the pipeline (fast remux / cached re-stitch / full render paths, cache validation via configHash, AbortSignal, user-visible warnings).
+  - `useApplySpeedCurve.ts`: Retimes one clip via output-driven frame sampling and re-encodes it on a capability-planned tier.
+  - `useStitchVideos.ts`: Concatenates clips — lossless packet passthrough when clips share a stream config (always true for our own intermediates), planned re-encode fallback for mixed sources.
+  - `useAudioMixing.ts` / `useRemuxAudio.ts`: Audio decode + assembly (shared `lib/audio-prep.ts`) and fast audio-only remux via video packet passthrough.
   - `useVideoPlayback.ts`: Manages HTML5 video element state (play/pause, seek).
   - `useAudioVisualization.ts`: Generates waveform data from audio files.
 - `lib/`:
+  - `encode-planner.ts`: Pure, tested planning of AVC profile/level/bitrate and resolution/framerate fallback ladders per machine capability.
+  - `video-encoding.ts`: Builds mediabunny encoding configs from planned tiers; probes support with the EXACT production config (probe/encode parity).
+  - `audio-prep.ts`: Offset/loop/downmix/fades audio assembly shared by mixing and remux paths (factory-injected, unit-testable).
+  - `audio-codec.ts`: Lazy AAC WASM polyfill registration (Firefox etc.) + quality-based audio bitrates.
+  - `abort-utils.ts`: AbortSignal helpers threaded through the pipeline.
   - `speed-curve.ts` & `easing-presets.ts`: Logic for timestamp remapping and ease curves.
-  - `video-encoding.ts`: Configuration for `mediabunny` encoding.
   - `timeline-utils.ts`: Helpers for duration calculations.
+- `lib/__tests__/`: Vitest suites for all pure logic (run with `npm test`).
 
 ## Workflow & Data Handling
 - **Session-Only**: All video blobs and state are ephemeral. No persistent storage (localStorage/IndexedDB) is used for media.
