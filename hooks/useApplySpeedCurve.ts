@@ -11,7 +11,7 @@ import {
   BufferTarget,
   Mp4OutputFormat,
 } from 'mediabunny';
-import type { Rotation } from 'mediabunny';
+import type { Rotation, VideoSample } from 'mediabunny';
 import {
   selectAdaptiveEasing,
   buildEasedSourceTimestamps,
@@ -285,45 +285,68 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
               outputSample.close();
             };
 
-            // Decoders on some platforms (notably Android MediaCodec) fail to
-            // emit frames near track edges. Rather than dropping those output
-            // slots (which visibly truncates eased endings), hold the nearest
-            // decoded frame: trailing nulls repeat the previous frame, leading
-            // nulls are backfilled by the first frame that arrives.
-            let heldSample: VideoSampleLike | null = null;
-            let pendingSlots: number[] = [];
+            // Forward, sequential decode of the section. Iterating samples()
+            // decodes frames in presentation order and drains the decoder to
+            // EOS, so the true final frames are emitted even on platforms
+            // (notably Android MediaCodec) that drop end-of-range frames under
+            // the per-timestamp seek path — the old samplesAtTimestamps + hold-
+            // frame approach froze the eased ending on an early frame there.
+            // Because the eased timestamps are monotonic, we merge them against
+            // the forward stream in a single pass: each output slot shows the
+            // last decoded frame whose timestamp is <= the eased time it wants
+            // (the streaming form of lib/speed-curve mapDesiredToSourceIndices).
+            const TS_EPS = 1e-9;
+            const sampleIterator = sink.samples(spanStart, spanEnd)[Symbol.asyncIterator]();
+            const pullSample = async (): Promise<VideoSample | null> => {
+              const next = await sampleIterator.next();
+              return next.done ? null : next.value;
+            };
+
+            let currentSample: VideoSample | null = null;
+            let nextSample: VideoSample | null = null;
             let decodedCount = 0;
-            let slotIndex = 0;
 
-            for await (const sample of sink.samplesAtTimestamps(sourceTimestamps)) {
-              throwIfAborted(signal);
-              const outputTime = slotIndex * minFrameInterval;
+            try {
+              // Prime inside the try so a throw on either pull still reaches the
+              // finally that closes the samples and stops the generator.
+              currentSample = await pullSample();
+              nextSample = currentSample ? await pullSample() : null;
+              decodedCount = currentSample ? 1 : 0;
 
-              if (sample) {
-                for (const pending of pendingSlots) {
-                  await emitSample(sample, pending * minFrameInterval, minFrameInterval);
+              for (let slot = 0; slot < totalOutputFrames; slot++) {
+                throwIfAborted(signal);
+                const desired = sourceTimestamps[slot];
+
+                // Advance until currentSample is the last decoded frame whose
+                // timestamp is <= the desired time (invariant: whenever
+                // nextSample is set, currentSample is too).
+                while (nextSample && nextSample.timestamp <= desired + TS_EPS) {
+                  currentSample!.close();
+                  currentSample = nextSample;
+                  nextSample = await pullSample();
+                  decodedCount++;
                 }
-                pendingSlots = [];
-                await emitSample(sample, outputTime, minFrameInterval);
-                heldSample?.close();
-                heldSample = sample;
-                decodedCount++;
-              } else if (heldSample) {
-                await emitSample(heldSample, outputTime, minFrameInterval);
-              } else {
-                pendingSlots.push(slotIndex);
-              }
 
-              slotIndex++;
-              if (slotIndex % 10 === 0) {
-                updateProgress(
-                  'processing',
-                  `Encoding: ${slotIndex}/${totalOutputFrames} frames...`,
-                  30 + (slotIndex / totalOutputFrames) * 60
-                );
+                const frame = currentSample ?? nextSample;
+                if (!frame) {
+                  break; // nothing decodable in this range
+                }
+                await emitSample(frame, slot * minFrameInterval, minFrameInterval);
+
+                if ((slot + 1) % 10 === 0) {
+                  updateProgress(
+                    'processing',
+                    `Encoding: ${slot + 1}/${totalOutputFrames} frames...`,
+                    30 + ((slot + 1) / totalOutputFrames) * 60
+                  );
+                }
               }
+            } finally {
+              currentSample?.close();
+              nextSample?.close();
+              // Stop the generator so it releases any pre-decoded frames.
+              await sampleIterator.return?.(undefined);
             }
-            heldSample?.close();
 
             if (decodedCount === 0) {
               throw new Error('No frames could be decoded from the source video');

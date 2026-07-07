@@ -68,6 +68,41 @@ export function buildEasedSourceTimestamps(params: EasedSampleParams): number[] 
   return timestamps;
 }
 
+/** Small tolerance for floating-point timestamp comparisons (seconds). */
+const TIMESTAMP_EPSILON = 1e-9;
+
+/**
+ * Merge monotonic eased `desired` timestamps against a monotonic forward stream
+ * of `sourceTimestamps` (the start timestamps of the decoded source frames, in
+ * presentation order). For each desired time, returns the index of the source
+ * frame to display: the last frame whose start timestamp is <= the desired
+ * time, clamped to the first frame for desired times before it.
+ *
+ * This is the pure form of the streaming forward-decode merge in
+ * useApplySpeedCurve — it lets the retimer emit real frames for every output
+ * slot from a single in-order decode pass (which drains the decoder to EOS,
+ * unlike per-timestamp seeking) instead of holding a frozen frame when the
+ * decoder drops end-of-range frames (the Android MediaCodec failure mode).
+ * Returns -1 for every slot when there are no source frames.
+ */
+export function mapDesiredToSourceIndices(
+  sourceTimestamps: number[],
+  desired: number[]
+): number[] {
+  const result: number[] = [];
+  if (sourceTimestamps.length === 0) {
+    return desired.map(() => -1);
+  }
+  let i = 0;
+  for (const d of desired) {
+    while (i + 1 < sourceTimestamps.length && sourceTimestamps[i + 1] <= d + TIMESTAMP_EPSILON) {
+      i++;
+    }
+    result.push(i);
+  }
+  return result;
+}
+
 export type AdaptiveCurveProfile = 'gentle' | 'balanced' | 'dynamic';
 
 export interface AdaptiveEasingSelection {

@@ -47,10 +47,13 @@ The pipeline plans encoding around what the current machine actually supports:
   native encoder (Firefox, Linux Chromium). Multichannel audio downmixes to
   stereo. When audio still can't be processed, the render completes and tells
   you, instead of silently producing a mute video.
-- **Android end-of-clip frame drops** (the old known issue): mitigated by the
-  packet-passthrough stitcher plus hold-frame handling for decoder tail
-  failures in the speed-curve stage. If you still see it on your device,
-  please open an issue with the device/browser version.
+- **Android end-of-clip frame drops** (the old known issue): the speed-curve
+  stage decodes each section as a single forward, sequential pass
+  (`VideoSampleSink.samples`) rather than seeking per output frame. Forward
+  decoding drains the decoder to end-of-stream, so the true final frames are
+  emitted instead of the eased ending freezing on an early frame — the failure
+  mode of Android MediaCodec under per-timestamp seeking. Combined with the
+  packet-passthrough stitcher, clip/section endings stay smooth.
 - Renders are cancellable, keep the screen awake, guard against accidental
   tab closes, and report failures in a visible dialog.
 

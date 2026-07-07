@@ -9,6 +9,7 @@ import {
   analyzeWarpCurve,
   selectAdaptiveEasing,
   buildEasedSourceTimestamps,
+  mapDesiredToSourceIndices,
   type VideoCurveMetadata,
 } from '@/lib/speed-curve';
 import { easing, getAllEasingNames, type EasingFunction } from '@/lib/easing-functions';
@@ -541,5 +542,57 @@ describe('buildEasedSourceTimestamps', () => {
     const midpoint = ts[5];
     expect(midpoint).toBeLessThan(5);
     expect(midpoint).toBeCloseTo(2.5, 1);
+  });
+});
+
+describe('mapDesiredToSourceIndices', () => {
+  // A source decoded at 30fps: frame start timestamps.
+  const src30 = Array.from({ length: 6 }, (_, i) => i / 30); // 0, .033, .066, ...
+
+  it('returns -1 for every slot when there are no source frames', () => {
+    expect(mapDesiredToSourceIndices([], [0, 0.5, 1])).toEqual([-1, -1, -1]);
+  });
+
+  it('clamps desired times before the first frame to index 0', () => {
+    expect(mapDesiredToSourceIndices(src30, [-1, -0.01, 0])).toEqual([0, 0, 0]);
+  });
+
+  it('picks the last frame whose start is <= the desired time', () => {
+    // desired 0.05 falls in frame 1 [0.033, 0.066); 0.07 in frame 2.
+    expect(mapDesiredToSourceIndices(src30, [0, 0.05, 0.07])).toEqual([0, 1, 2]);
+  });
+
+  it('repeats the same index for clustered desired times (ease-out tail)', () => {
+    // Several output slots land inside the final source frame -> all map to it,
+    // so the retimer emits the REAL last frame repeatedly instead of a frozen
+    // early hold. Index never exceeds the last source frame.
+    const last = src30.length - 1;
+    const clustered = [0.15, 0.16, 0.165, 0.166, 0.167, 10];
+    const idx = mapDesiredToSourceIndices(src30, clustered);
+    expect(idx[idx.length - 1]).toBe(last);
+    expect(Math.max(...idx)).toBe(last);
+  });
+
+  it('skips source frames for a speed-up (advances multiple per slot)', () => {
+    // Desired jumps 0 -> 0.13 should land on frame 3 (0.1) or 4 (0.133).
+    const idx = mapDesiredToSourceIndices(src30, [0, 0.13]);
+    expect(idx[0]).toBe(0);
+    expect(idx[1]).toBe(3);
+  });
+
+  it('is monotonically non-decreasing for monotonic inputs', () => {
+    const desired = buildEasedSourceTimestamps({
+      spanStart: 0,
+      spanEnd: src30[src30.length - 1],
+      trackEnd: src30[src30.length - 1],
+      easing: easing.easeInOutCubic,
+      outputFrameCount: 20,
+      minFrameInterval: 1 / 60,
+    });
+    const idx = mapDesiredToSourceIndices(src30, desired);
+    for (let i = 1; i < idx.length; i++) {
+      expect(idx[i]).toBeGreaterThanOrEqual(idx[i - 1]);
+    }
+    expect(idx.every((i) => i >= 0 && i < src30.length)).toBe(true);
   });
 });
