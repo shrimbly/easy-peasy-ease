@@ -8,6 +8,7 @@ import {
   validateWarpFunction,
   analyzeWarpCurve,
   selectAdaptiveEasing,
+  buildEasedSourceTimestamps,
   type VideoCurveMetadata,
 } from '@/lib/speed-curve';
 import { easing, getAllEasingNames, type EasingFunction } from '@/lib/easing-functions';
@@ -430,5 +431,115 @@ describe('selectAdaptiveEasing', () => {
       const sel = selectAdaptiveEasing(m);
       expect(sel.easingFunction).toBe(easing[sel.easingName]);
     }
+  });
+});
+
+describe('buildEasedSourceTimestamps', () => {
+  const linear: EasingFunction = (t) => t;
+
+  it('emits exactly outputFrameCount samples', () => {
+    const ts = buildEasedSourceTimestamps({
+      spanStart: 0,
+      spanEnd: 5,
+      trackEnd: 5,
+      easing: linear,
+      outputFrameCount: 45,
+      minFrameInterval: 1 / 30,
+    });
+    expect(ts).toHaveLength(45);
+  });
+
+  it('starts at spanStart and (with linear easing) rises monotonically', () => {
+    const ts = buildEasedSourceTimestamps({
+      spanStart: 2,
+      spanEnd: 7,
+      trackEnd: 10,
+      easing: linear,
+      outputFrameCount: 30,
+      minFrameInterval: 1 / 30,
+    });
+    expect(ts[0]).toBeCloseTo(2, 6);
+    for (let i = 1; i < ts.length; i++) {
+      expect(ts[i]).toBeGreaterThanOrEqual(ts[i - 1]);
+    }
+  });
+
+  it('samples a sub-range instead of the whole track', () => {
+    // A middle section [4, 6] of a 10s track must never sample outside it.
+    const ts = buildEasedSourceTimestamps({
+      spanStart: 4,
+      spanEnd: 6,
+      trackEnd: 10,
+      easing: linear,
+      outputFrameCount: 60,
+      minFrameInterval: 1 / 60,
+    });
+    for (const t of ts) {
+      expect(t).toBeGreaterThanOrEqual(4);
+      expect(t).toBeLessThanOrEqual(6);
+    }
+    expect(ts[0]).toBeCloseTo(4, 6);
+  });
+
+  it('clamps the final sample inside the last frame of the section', () => {
+    const minFrameInterval = 1 / 30;
+    const ts = buildEasedSourceTimestamps({
+      spanStart: 0,
+      spanEnd: 5,
+      trackEnd: 5,
+      easing: linear,
+      outputFrameCount: 30,
+      minFrameInterval,
+    });
+    const last = ts[ts.length - 1];
+    // Strictly less than spanEnd so a decode request can't fall off the track.
+    expect(last).toBeLessThan(5);
+    expect(last).toBeCloseTo(5 - Math.min(0.001, minFrameInterval / 2), 6);
+  });
+
+  it('never exceeds the track end even when spanEnd is beyond it', () => {
+    const ts = buildEasedSourceTimestamps({
+      spanStart: 0,
+      spanEnd: 8,
+      trackEnd: 5,
+      easing: linear,
+      outputFrameCount: 40,
+      minFrameInterval: 1 / 30,
+    });
+    for (const t of ts) {
+      expect(t).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it('handles a degenerate zero-length span without NaN', () => {
+    const ts = buildEasedSourceTimestamps({
+      spanStart: 3,
+      spanEnd: 3,
+      trackEnd: 10,
+      easing: linear,
+      outputFrameCount: 10,
+      minFrameInterval: 1 / 30,
+    });
+    expect(ts).toHaveLength(10);
+    for (const t of ts) {
+      expect(Number.isFinite(t)).toBe(true);
+      expect(t).toBeCloseTo(3, 6);
+    }
+  });
+
+  it('applies the easing curve (ease-in samples the start slowly)', () => {
+    const easeIn: EasingFunction = (t) => t * t;
+    const ts = buildEasedSourceTimestamps({
+      spanStart: 0,
+      spanEnd: 10,
+      trackEnd: 10,
+      easing: easeIn,
+      outputFrameCount: 11,
+      minFrameInterval: 1 / 10,
+    });
+    // Halfway through the output, an ease-in curve is only ~25% into the source.
+    const midpoint = ts[5];
+    expect(midpoint).toBeLessThan(5);
+    expect(midpoint).toBeCloseTo(2.5, 1);
   });
 });

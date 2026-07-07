@@ -14,6 +14,9 @@ ffmpeg -y -loglevel error -f lavfi -i "mandelbrot=size=1920x1080:rate=30" -t 5 \
   -c:v libx264 -profile:v high -pix_fmt yuv420p -b:v 8M clip3.mp4 &
 ffmpeg -y -loglevel error -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=5" \
   -c:v libx264 -profile:v high -pix_fmt yuv420p -b:v 4M clip_small.mp4 &
+# One long clip for the "Split a video" flow (12s -> 3 sections at 5s).
+ffmpeg -y -loglevel error -f lavfi -i "testsrc2=size=1920x1080:rate=30:duration=12" \
+  -c:v libx264 -profile:v high -pix_fmt yuv420p -b:v 8M long.mp4 &
 ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:duration=10" -ac 2 -b:a 128k music.mp3 &
 wait
 echo "Fixtures written to $(pwd)"

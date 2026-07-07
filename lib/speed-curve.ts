@@ -23,6 +23,51 @@ export interface VideoCurveMetadata {
   frameRate: number;
 }
 
+export interface EasedSampleParams {
+  /** Absolute track time (s) where this section begins. */
+  spanStart: number;
+  /** Absolute track time (s) where this section ends. */
+  spanEnd: number;
+  /** Absolute end timestamp (s) of the whole track — a hard upper clamp. */
+  trackEnd: number;
+  /** Easing function mapping output progress -> source progress, both [0, 1]. */
+  easing: EasingFunction;
+  /** Number of output frame slots to emit. */
+  outputFrameCount: number;
+  /** Output frame interval (s), used to size the end-of-section safety clamp. */
+  minFrameInterval: number;
+}
+
+/**
+ * Precompute, for each output frame slot, the source timestamp the easing
+ * curve calls for within a section [spanStart, spanEnd]. This is the heart of
+ * the output-driven retimer: output progress p in [0, 1] samples the source at
+ * `spanStart + easing(p) * (spanEnd - spanStart)`.
+ *
+ * Timestamps are clamped inside the last real frame of the section (and never
+ * past the track end) so end-of-section requests can't fall off the track —
+ * the same edge mitigation the whole-clip path relies on. Passing the full
+ * clip (spanStart = firstTimestamp, spanEnd = trackEnd) reproduces the
+ * original whole-clip behaviour exactly; a sub-range yields one eased section.
+ */
+export function buildEasedSourceTimestamps(params: EasedSampleParams): number[] {
+  const { spanStart, spanEnd, trackEnd, easing: easingFunc, outputFrameCount, minFrameInterval } =
+    params;
+  const frames = Math.max(1, Math.floor(outputFrameCount));
+  const span = Math.max(0, spanEnd - spanStart);
+  const epsilon = Math.min(0.001, minFrameInterval / 2);
+  const endClamp = Math.max(spanStart, Math.min(spanEnd, trackEnd) - epsilon);
+
+  const timestamps: number[] = [];
+  for (let slot = 0; slot < frames; slot++) {
+    const outputProgress = frames > 1 ? slot / (frames - 1) : 0;
+    const sourceProgress = easingFunc(outputProgress);
+    const sourceTime = spanStart + sourceProgress * span;
+    timestamps.push(Math.min(Math.max(sourceTime, spanStart), endClamp));
+  }
+  return timestamps;
+}
+
 export type AdaptiveCurveProfile = 'gentle' | 'balanced' | 'dynamic';
 
 export interface AdaptiveEasingSelection {

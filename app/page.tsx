@@ -1,13 +1,15 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle } from 'lucide-react';
+import { Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle, Scissors, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { LightRays } from '@/components/ui/light-rays';
 import { BlurFade } from '@/components/ui/blur-fade';
 import { FinalVideoEditor } from '@/components/FinalVideoEditor';
+import { VideoSplitEditor, type SplitConfig } from '@/components/VideoSplitEditor';
+import { buildSectionSegments } from '@/lib/chunking';
 import { useFinalizeVideo } from '@/hooks/useFinalizeVideo';
 import {
   TransitionVideo,
@@ -17,6 +19,7 @@ import {
   UpdateReason,
   FinalizeContext,
   RenderQuality,
+  VideoEncodeCapability,
 } from '@/lib/types';
 import TextPressure from '@/components/text/text-pressure';
 import {
@@ -48,6 +51,19 @@ type VideoMetadata = {
   duration: number;
 };
 
+type EditorMode = 'stitch' | 'split';
+
+/** One long video staged for the "Split a video" flow. */
+type SplitSource = {
+  file: File;
+  url: string;
+  name: string;
+  duration: number;
+  width: number;
+  height: number;
+  encodeCapability?: VideoEncodeCapability;
+};
+
 const MAX_TOTAL_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5GB
 
 interface PreflightWarning {
@@ -71,16 +87,22 @@ const readVideoMetadata = async (
     if (!track) {
       throw new Error('No video track found in this file.');
     }
-    const [displayWidth, displayHeight, codedWidth, codedHeight, canDecode, duration, stats] =
+    const [displayWidth, displayHeight, codedWidth, codedHeight, canDecode, firstTimestamp, endTimestamp, stats] =
       await Promise.all([
         track.getDisplayWidth(),
         track.getDisplayHeight(),
         track.getCodedWidth(),
         track.getCodedHeight(),
         track.canDecode().catch(() => false),
+        track.getFirstTimestamp().catch(() => 0),
         track.computeDuration().catch(() => 0),
         track.computePacketStats().catch(() => null),
       ]);
+    // mediabunny's computeDuration() returns the END timestamp of the last
+    // packet, and getFirstTimestamp() can be non-zero (Android/edited clips).
+    // The playable content span is end - first — this is what split points are
+    // measured against (they're offsets from the first frame in the retimer).
+    const duration = Math.max(0, endTimestamp - firstTimestamp);
     return {
       width: displayWidth,
       height: displayHeight,
@@ -181,6 +203,8 @@ const syncSegmentsToLoopCount = (
 
 export default function Home() {
   const [uploadedVideos, setUploadedVideos] = useState<File[]>([]);
+  const [mode, setMode] = useState<EditorMode>('stitch');
+  const [splitSource, setSplitSource] = useState<SplitSource | null>(null);
   const [transitionVideos, setTransitionVideos] = useState<TransitionVideo[]>([]);
   const [selectedSegmentId, setSelectedSegmentId] = useState<number | null>(null);
   const [loopCount, setLoopCount] = useState(1);
@@ -199,6 +223,7 @@ export default function Home() {
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [finalizeWarnings, setFinalizeWarnings] = useState<string[]>([]);
   const [audioExportSupported, setAudioExportSupported] = useState(true);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const transitionVideosRef = useRef<TransitionVideo[]>([]);
   const finalizeAbortRef = useRef<AbortController | null>(null);
 
@@ -462,6 +487,74 @@ export default function Home() {
     },
     [cleanupSegmentResources, evaluateVideoEncodeCapability]
   );
+  const handleSplitVideoUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (e.target) {
+        e.target.value = '';
+      }
+      if (!file || !file.type.startsWith('video/')) {
+        return;
+      }
+
+      setUploadError(null);
+      const url = URL.createObjectURL(file);
+      try {
+        const metadata = await readVideoMetadata(file);
+        if (!(metadata.duration > 0) || !Number.isFinite(metadata.duration)) {
+          throw new Error('Could not read this video’s duration. Try a different file.');
+        }
+
+        // Probe encode capability with the exact plan the render will use, so
+        // the split editor can warn before the user spends time placing splits.
+        let capability: VideoEncodeCapability;
+        try {
+          const tiers = buildEncodeTiers(
+            { width: metadata.codedWidth, height: metadata.codedHeight, bitrate: metadata.bitrate },
+            'full',
+            [MAX_OUTPUT_FPS, PREVIEW_FPS]
+          );
+          const tier = metadata.canDecode ? await selectSupportedTier(tiers) : null;
+          const supported = metadata.canDecode && tier !== null;
+          const isNativeTier = tier !== null && !tier.needsResize;
+          capability = {
+            status: supported ? 'supported' : 'unsupported',
+            message: !metadata.canDecode
+              ? 'This browser cannot decode this video format. Try converting it to H.264 MP4.'
+              : tier === null
+                ? `Device encoder cannot output ${formatResolutionLabel(metadata.width, metadata.height)}`
+                : isNativeTier
+                  ? `Device can encode ${formatResolutionLabel(metadata.width, metadata.height)}`
+                  : `Will render at ${tier.width}x${tier.height} on this device (source is ${formatResolutionLabel(metadata.width, metadata.height)})`,
+            codecString: tier?.codecString,
+            bitrate: tier?.bitrate,
+          };
+        } catch (capErr) {
+          capability = {
+            status: 'error',
+            message: capErr instanceof Error ? capErr.message : 'Unable to verify encode capability',
+          };
+        }
+
+        setUploadedVideos([file]);
+        setSplitSource({
+          file,
+          url,
+          name: file.name,
+          duration: metadata.duration,
+          width: metadata.width,
+          height: metadata.height,
+          encodeCapability: capability,
+        });
+      } catch (error) {
+        URL.revokeObjectURL(url);
+        console.error('Failed to read uploaded video', error);
+        setUploadError(error instanceof Error ? error.message : 'Failed to read this video.');
+      }
+    },
+    []
+  );
+
   const handleSelectSegment = (id: number) => {
     setSelectedSegmentId(id);
   };
@@ -652,8 +745,17 @@ export default function Home() {
       });
     }
 
-    // 3. Check total file size
-    const totalSize = segments.reduce((acc, s) => acc + (s.file?.size || 0), 0);
+    // 3. Check total file size. Split-mode sections all reference the same
+    // source file, so count each distinct file only once (otherwise an N-way
+    // split would report N× the real size).
+    const seenFiles = new Set<File | Blob>();
+    let totalSize = 0;
+    segments.forEach((s) => {
+      if (s.file && !seenFiles.has(s.file)) {
+        seenFiles.add(s.file);
+        totalSize += s.file.size;
+      }
+    });
     if (totalSize > MAX_TOTAL_SIZE_BYTES) {
       warnings.push({
         id: 'large-files',
@@ -779,6 +881,72 @@ export default function Home() {
     }
   };
 
+  // "Split a video": turn the placed splits into per-section segments (all
+  // sharing the one source file) and render them through the same pipeline the
+  // multi-clip flow uses. Defined after handleFinalizeVideo so it can call it.
+  const handleCreateSections = async (config: SplitConfig) => {
+    if (!splitSource || config.sections.length === 0) {
+      return;
+    }
+
+    const segments = buildSectionSegments(
+      {
+        file: splitSource.file,
+        name: splitSource.name,
+        width: splitSource.width,
+        height: splitSource.height,
+        encodeCapability: splitSource.encodeCapability,
+      },
+      config.sections,
+      { outputDuration: config.outputDuration, easingPreset: config.easingPreset },
+      (f) => URL.createObjectURL(f)
+    );
+
+    setTransitionVideos((prev) => {
+      cleanupSegmentResources(prev);
+      return segments;
+    });
+    setLoopCount(1);
+    setSelectedSegmentId(segments[0]?.id ?? null);
+    setSpeedCurveCache(null);
+    prevAudioBlobRef.current = null;
+    prevAudioSettingsRef.current = null;
+
+    // updateReason 'full' — this is a fresh render of brand-new segments.
+    // Quality follows the renderQuality toggle (preview-first, like stitch).
+    await handleFinalizeVideo(segments, undefined, false, undefined, 'full');
+  };
+
+  const handleExitSplit = () => {
+    setSplitSource((prev) => {
+      if (prev) {
+        URL.revokeObjectURL(prev.url);
+      }
+      return null;
+    });
+    // A failed create can leave staged section segments (with object URLs) in
+    // state; revoke them so backing out doesn't leak.
+    setTransitionVideos((prev) => {
+      cleanupSegmentResources(prev);
+      return [];
+    });
+    setSelectedSegmentId(null);
+    setSpeedCurveCache(null);
+    setUploadedVideos([]);
+    setUploadError(null);
+    prevAudioBlobRef.current = null;
+    prevAudioSettingsRef.current = null;
+  };
+
+  // Once a final video exists the split source has served its purpose; revoke
+  // its preview URL and drop it so the FinalVideoEditor takes over cleanly.
+  useEffect(() => {
+    if (finalVideo && splitSource) {
+      URL.revokeObjectURL(splitSource.url);
+      setSplitSource(null);
+    }
+  }, [finalVideo, splitSource]);
+
   const handleCancelFinalize = () => {
     finalizeAbortRef.current?.abort();
   };
@@ -876,6 +1044,82 @@ export default function Home() {
     }
   });
 
+  // Shared across the final-video and split editors (mutually exclusive
+  // branches, so only one instance is ever mounted at a time).
+  const preflightDialog = (
+    <Dialog open={showPreflightDialog} onOpenChange={setShowPreflightDialog}>
+      <DialogContent className="sm:max-w-[425px]">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
+            <AlertTriangle className="h-5 w-5" />
+            Review Issues
+          </DialogTitle>
+          <DialogDescription>
+            We found some potential issues with your videos.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[60vh] overflow-y-auto py-4 space-y-4">
+          {preflightWarnings.map((warning) => (
+            <div key={warning.id} className={cn("rounded-md border p-3 text-sm",
+              warning.severity === 'error' ? "bg-destructive/10 border-destructive/20" : "bg-amber-500/10 border-amber-500/20"
+            )}>
+              <h5 className={cn("font-semibold mb-1",
+                warning.severity === 'error' ? "text-destructive" : "text-amber-700 dark:text-amber-400"
+              )}>
+                {warning.title}
+              </h5>
+              <p className="text-muted-foreground">{warning.description}</p>
+            </div>
+          ))}
+        </div>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={() => setShowPreflightDialog(false)}>
+            Back to Edit
+          </Button>
+          <Button
+            variant={preflightWarnings.some(w => w.severity === 'error') ? "destructive" : "default"}
+            onClick={() => {
+              setShowPreflightDialog(false);
+              void handleFinalizeVideo(undefined, undefined, true);
+            }}
+          >
+            Proceed Anyway
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
+  const finalizingDialog = (
+    <Dialog open={isFinalizingVideo}>
+      <DialogContent className="max-w-sm">
+        <DialogTitle className="sr-only">Video Processing</DialogTitle>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <p className="font-semibold text-foreground">
+              {finalizationMessage}
+            </p>
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
+              <span>Processing...</span>
+              <span>{Math.round(finalizationProgress)}%</span>
+            </div>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+            <div
+              className="h-full bg-primary transition-all duration-300"
+              style={{ width: `${finalizationProgress}%` }}
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" onClick={handleCancelFinalize}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
   return (
     <div className="relative flex min-h-[calc(100vh-80px)] items-center justify-center bg-background overflow-hidden pb-20 sm:pb-24">
       <LightRays
@@ -888,7 +1132,7 @@ export default function Home() {
       <main
         className={cn(
           'relative z-10 flex w-full flex-col items-center justify-center gap-12 px-4 py-12',
-          finalVideo ? 'max-w-none items-stretch justify-start px-4 py-8 lg:px-8 lg:py-10' : 'max-w-2xl'
+          finalVideo || splitSource ? 'max-w-none items-stretch justify-start px-4 py-8 lg:px-8 lg:py-10' : 'max-w-2xl'
         )}
       >
         {finalVideo ? (
@@ -939,75 +1183,28 @@ export default function Home() {
               currentRenderQuality={currentRenderQuality}
             />
 
-            <Dialog open={showPreflightDialog} onOpenChange={setShowPreflightDialog}>
-              <DialogContent className="sm:max-w-[425px]">
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-500">
-                    <AlertTriangle className="h-5 w-5" />
-                    Review Issues
-                  </DialogTitle>
-                  <DialogDescription>
-                    We found some potential issues with your videos.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="max-h-[60vh] overflow-y-auto py-4 space-y-4">
-                  {preflightWarnings.map((warning) => (
-                    <div key={warning.id} className={cn("rounded-md border p-3 text-sm",
-                      warning.severity === 'error' ? "bg-destructive/10 border-destructive/20" : "bg-amber-500/10 border-amber-500/20"
-                    )}>
-                      <h5 className={cn("font-semibold mb-1",
-                        warning.severity === 'error' ? "text-destructive" : "text-amber-700 dark:text-amber-400"
-                      )}>
-                        {warning.title}
-                      </h5>
-                      <p className="text-muted-foreground">{warning.description}</p>
-                    </div>
-                  ))}
-                </div>
-                <DialogFooter className="gap-2 sm:gap-0">
-                  <Button variant="outline" onClick={() => setShowPreflightDialog(false)}>
-                    Back to Edit
-                  </Button>
-                  <Button
-                    variant={preflightWarnings.some(w => w.severity === 'error') ? "destructive" : "default"}
-                    onClick={() => {
-                      setShowPreflightDialog(false);
-                      void handleFinalizeVideo(undefined, undefined, true);
-                    }}
-                  >
-                    Proceed Anyway
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+            {preflightDialog}
+            {finalizingDialog}
+          </section>
+        ) : splitSource ? (
+          <section className="w-full min-h-[calc(100vh-5rem)] space-y-8">
+            <VideoSplitEditor
+              file={splitSource.file}
+              url={splitSource.url}
+              duration={splitSource.duration}
+              width={splitSource.width}
+              height={splitSource.height}
+              encodeCapability={splitSource.encodeCapability}
+              easingOptions={EASING_PRESETS}
+              onCreate={(config: SplitConfig) => {
+                void handleCreateSections(config);
+              }}
+              onBack={handleExitSplit}
+              isBusy={isFinalizingVideo}
+            />
 
-            <Dialog open={isFinalizingVideo}>
-              <DialogContent className="max-w-sm">
-                <DialogTitle className="sr-only">Video Processing</DialogTitle>
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <p className="font-semibold text-foreground">
-                      {finalizationMessage}
-                    </p>
-                    <div className="flex items-center justify-between text-sm text-muted-foreground">
-                      <span>Processing...</span>
-                      <span>{Math.round(finalizationProgress)}%</span>
-                    </div>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-                    <div
-                      className="h-full bg-primary transition-all duration-300"
-                      style={{ width: `${finalizationProgress}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-end">
-                    <Button variant="outline" size="sm" onClick={handleCancelFinalize}>
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
+            {preflightDialog}
+            {finalizingDialog}
           </section>
         ) : (
           <>
@@ -1036,10 +1233,56 @@ export default function Home() {
               </div>
             </BlurFade>
 
-            {/* Upload Area - Upload Videos */}
+            {/* Upload Area */}
             {uploadedVideos.length === 0 && (
               <BlurFade delay={0.2} className="w-full">
                 <div className="w-full space-y-4">
+                  {/* Mode toggle: stitch many clips vs split one long video.
+                      Toggle buttons (aria-pressed), not a tablist — there is no
+                      tabpanel and no roving-tabindex arrow-key contract here. */}
+                  <div className="flex justify-center">
+                    <div
+                      role="group"
+                      aria-label="Choose how to start"
+                      className="inline-flex rounded-lg border border-border bg-secondary/40 p-1"
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={mode === 'stitch'}
+                        onClick={() => {
+                          setMode('stitch');
+                          setUploadError(null);
+                        }}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                          mode === 'stitch'
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        <Layers className="h-4 w-4" />
+                        Stitch clips
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={mode === 'split'}
+                        onClick={() => {
+                          setMode('split');
+                          setUploadError(null);
+                        }}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                          mode === 'split'
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        <Scissors className="h-4 w-4" />
+                        Split one video
+                      </button>
+                    </div>
+                  </div>
+
                   <input
                     type="file"
                     accept="video/*"
@@ -1051,6 +1294,16 @@ export default function Home() {
                     multiple
                     disabled={!isSupported}
                   />
+                  <input
+                    type="file"
+                    accept="video/*"
+                    onChange={(event) => {
+                      void handleSplitVideoUpload(event);
+                    }}
+                    className="hidden"
+                    id="split-input"
+                    disabled={!isSupported}
+                  />
                   <div
                     className={cn(
                       "rounded-lg border-2 border-dashed border-muted-foreground/30 p-12 text-center transition-colors min-h-[300px] flex items-center justify-center",
@@ -1060,30 +1313,62 @@ export default function Home() {
                     )}
                     onMouseEnter={() => isSupported && setIsDropZoneHovered(true)}
                     onMouseLeave={() => setIsDropZoneHovered(false)}
-                    onClick={() => isSupported && document.getElementById('videos-input')?.click()}
+                    onClick={() =>
+                      isSupported &&
+                      document.getElementById(mode === 'split' ? 'split-input' : 'videos-input')?.click()
+                    }
                     onKeyDown={(e) => {
                       if (isSupported && (e.key === 'Enter' || e.key === ' ')) {
                         e.preventDefault();
-                        document.getElementById('videos-input')?.click();
+                        document
+                          .getElementById(mode === 'split' ? 'split-input' : 'videos-input')
+                          ?.click();
                       }
                     }}
                     tabIndex={isSupported ? 0 : -1}
                     role="button"
-                    aria-label={isSupported ? "Click to upload videos" : "Browser not supported"}
+                    aria-label={
+                      isSupported
+                        ? mode === 'split'
+                          ? 'Click to upload one long video'
+                          : 'Click to upload videos'
+                        : 'Browser not supported'
+                    }
                     aria-disabled={!isSupported}
                   >
                     <div className="flex flex-col items-center justify-center gap-4">
-                      <Upload className="h-10 w-10 text-muted-foreground" />
+                      {mode === 'split' ? (
+                        <Scissors className="h-10 w-10 text-muted-foreground" />
+                      ) : (
+                        <Upload className="h-10 w-10 text-muted-foreground" />
+                      )}
                       <div className="flex flex-col items-center gap-2">
                         <p className="text-sm font-semibold text-foreground">
-                          {!isSupported ? 'Browser not supported, try Chrome' : 'Upload your videos'}
+                          {!isSupported
+                            ? 'Browser not supported, try Chrome'
+                            : mode === 'split'
+                              ? 'Upload one long video'
+                              : 'Upload your videos'}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {!isSupported ? 'WebCodecs API required' : 'MP4, WebM - Select one or more videos'}
+                          {!isSupported
+                            ? 'WebCodecs API required'
+                            : mode === 'split'
+                              ? 'MP4, WebM — we’ll cut it into eased sections'
+                              : 'MP4, WebM - Select one or more videos'}
                         </p>
                       </div>
                     </div>
                   </div>
+
+                  {uploadError && (
+                    <p className="text-center text-sm text-destructive">{uploadError}</p>
+                  )}
+                  <p className="text-center text-xs text-muted-foreground">
+                    {mode === 'split'
+                      ? 'Chop one long clip into equal sections and ease each one — great for beat-synced loops.'
+                      : 'Combine several short clips into a single eased loop.'}
+                  </p>
                 </div>
               </BlurFade>
             )}

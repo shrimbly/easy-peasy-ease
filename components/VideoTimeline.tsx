@@ -208,7 +208,10 @@ export function VideoTimeline({
 
     segments.forEach((segment) => {
       if (!segment.url || segment.loading) return;
-      const key = `${segment.url}`;
+      // Split-mode sections share one source URL but start at different times,
+      // so key the cache (and the extraction time) on the section's in-point.
+      const thumbnailTime = segment.sourceStartTime ?? 0;
+      const key = `${segment.url}@${thumbnailTime}`;
       const cached = thumbnailCacheRef.current.get(key);
 
       if (cached) {
@@ -222,7 +225,7 @@ export function VideoTimeline({
       if (pendingKeys.has(key)) return;
       pendingKeys.add(key);
 
-      extractVideoThumbnail(segment.url, 0)
+      extractVideoThumbnail(segment.url, thumbnailTime)
         .then((thumbnail) => {
           if (isCancelled) return;
           thumbnailCacheRef.current.set(key, thumbnail);

@@ -23,6 +23,9 @@ npm run dev
 ## Key Features
 
 - **Browser-based**: All processing happens client-side using Mediabunny—no server-side encoding
+- **Two ways to start**: stitch several short clips, or split **one long video**
+  into eased sections at split points you place (see
+  [`docs/split-video-feature.md`](docs/split-video-feature.md))
 - **Speed Curves**: Apply preset or custom Bezier curves for organic motion
 - **Audio Mixing**: Mix background music with video client-side
 - **Session-only**: No persistent storage; all data is ephemeral

@@ -14,6 +14,7 @@ import {
 import type { Rotation } from 'mediabunny';
 import {
   selectAdaptiveEasing,
+  buildEasedSourceTimestamps,
   type VideoCurveMetadata,
 } from '@/lib/speed-curve';
 import { getEasingFunction, type EasingFunction } from '@/lib/easing-functions';
@@ -47,6 +48,13 @@ export interface ApplySpeedCurveOptions {
   quality?: RenderQuality;
   signal?: AbortSignal;
   onProgress?: (progress: SpeedCurveProgress) => void;
+  /**
+   * "Split a video" mode: retime only this sub-range of the source (seconds
+   * from the source's first frame). When omitted, the whole clip is used.
+   * `sourceEndTime` defaults to the end of the clip when only a start is given.
+   */
+  sourceStartTime?: number;
+  sourceEndTime?: number;
 }
 
 interface UseApplySpeedCurveReturn {
@@ -133,6 +141,8 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         quality = 'full',
         signal,
         onProgress,
+        sourceStartTime,
+        sourceEndTime,
       } = options;
       const isPreview = quality === 'preview';
 
@@ -152,7 +162,23 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
 
         const source = await probeSource(videoBlob, inputDuration);
         const sourceSpan = source.endTimestamp - source.firstTimestamp;
-        const effectiveInputDuration = sourceSpan > 0 ? sourceSpan : inputDuration;
+
+        // Resolve the section span. sourceStartTime/sourceEndTime are offsets
+        // from the source's first frame; map them to absolute track time and
+        // clamp inside [firstTimestamp, endTimestamp]. Absent -> whole clip.
+        const clampToTrack = (t: number) =>
+          Math.min(Math.max(t, source.firstTimestamp), source.endTimestamp);
+        const spanStart =
+          sourceStartTime != null && Number.isFinite(sourceStartTime)
+            ? clampToTrack(source.firstTimestamp + sourceStartTime)
+            : source.firstTimestamp;
+        const spanEnd =
+          sourceEndTime != null && Number.isFinite(sourceEndTime)
+            ? Math.max(spanStart, clampToTrack(source.firstTimestamp + sourceEndTime))
+            : source.endTimestamp;
+        const spanDuration = spanEnd - spanStart;
+        const effectiveInputDuration =
+          spanDuration > 0 ? spanDuration : sourceSpan > 0 ? sourceSpan : inputDuration;
 
         // Adapt the default curve to the source material; explicit user
         // choices are respected untouched.
@@ -230,22 +256,20 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
             const minFrameInterval = 1 / tier.frameRate;
             const totalOutputFrames = Math.max(1, Math.round(outputDuration * tier.frameRate));
 
-            // Pre-compute the source timestamp each output frame slot needs,
+            // Pre-compute the source timestamp each output frame slot needs.
+            // In "Split a video" mode this samples only [spanStart, spanEnd];
+            // in whole-clip mode the span is the entire track. Timestamps are
             // anchored at the track's real first timestamp (Android camera
             // clips often do not start at zero) and clamped inside the last
-            // frame so end-of-clip requests cannot fall off the track.
-            const endClamp = Math.max(
-              source.firstTimestamp,
-              source.endTimestamp - Math.min(0.001, minFrameInterval / 2)
-            );
-            const sourceTimestamps: number[] = [];
-            for (let outputSlot = 0; outputSlot < totalOutputFrames; outputSlot++) {
-              const outputProgress = totalOutputFrames > 1 ? outputSlot / (totalOutputFrames - 1) : 0;
-              const sourceProgress = easingFunc(outputProgress);
-              const sourceTime =
-                source.firstTimestamp + sourceProgress * effectiveInputDuration;
-              sourceTimestamps.push(Math.min(Math.max(sourceTime, source.firstTimestamp), endClamp));
-            }
+            // frame so end-of-section requests cannot fall off the track.
+            const sourceTimestamps = buildEasedSourceTimestamps({
+              spanStart,
+              spanEnd,
+              trackEnd: source.endTimestamp,
+              easing: easingFunc,
+              outputFrameCount: totalOutputFrames,
+              minFrameInterval,
+            });
 
             updateProgress('processing', `Processing ${totalOutputFrames} frames...`, 30);
 

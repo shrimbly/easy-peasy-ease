@@ -34,6 +34,15 @@ export interface TransitionVideo {
   width?: number;
   height?: number;
   encodeCapability?: VideoEncodeCapability;
+  /**
+   * "Split a video" mode: presentation-time in/out points (seconds measured
+   * from the source's first frame) of this section within a shared source
+   * file. When set, only this sub-range of the source is retimed by the speed
+   * curve; when absent, the whole source clip is used ("Stitch clips" mode).
+   * Multiple sections cut from one upload share the same underlying `file`.
+   */
+  sourceStartTime?: number;
+  sourceEndTime?: number;
 }
 
 export interface AudioTrack {

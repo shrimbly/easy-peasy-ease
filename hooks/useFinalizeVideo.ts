@@ -59,6 +59,9 @@ export function computeConfigHash(
       customBezier: v.customBezier?.join(',') ?? '',
       // Use file size as proxy for source video identity
       sourceSize: v.file?.size ?? v.cachedBlob?.size ?? 0,
+      // Split-mode source range — moving a split must invalidate the cache.
+      sourceStart: v.sourceStartTime ?? null,
+      sourceEnd: v.sourceEndTime ?? null,
     }));
   return JSON.stringify({ quality, inputDuration, segments: relevantData });
 }
@@ -343,6 +346,9 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
             easing: easingFunction,
             quality,
             signal,
+            // Split-mode: retime only this section's sub-range of the source.
+            sourceStartTime: segmentMetadata.sourceStartTime,
+            sourceEndTime: segmentMetadata.sourceEndTime,
             onProgress: (curveProgress) => {
               emit({
                 stage: 'applying-curves',
