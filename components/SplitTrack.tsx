@@ -216,8 +216,7 @@ export function SplitTrack({
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Scissors className="h-3.5 w-3.5" />
           <span>
-            {sections.length} section{sections.length === 1 ? '' : 's'} · drag a diamond to move a
-            split, tap it to remove
+            {sections.length} section{sections.length === 1 ? '' : 's'} · drag to move, tap to remove
           </span>
         </div>
         <button

@@ -12,11 +12,7 @@ import {
   Mp4OutputFormat,
 } from 'mediabunny';
 import type { Rotation, VideoSample } from 'mediabunny';
-import {
-  selectAdaptiveEasing,
-  buildEasedSourceTimestamps,
-  type VideoCurveMetadata,
-} from '@/lib/speed-curve';
+import { buildEasedSourceTimestamps } from '@/lib/speed-curve';
 import { getEasingFunction, type EasingFunction } from '@/lib/easing-functions';
 import type { RenderQuality } from '@/lib/types';
 import {
@@ -180,23 +176,19 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         const effectiveInputDuration =
           spanDuration > 0 ? spanDuration : sourceSpan > 0 ? sourceSpan : inputDuration;
 
-        // Adapt the default curve to the source material; explicit user
-        // choices are respected untouched.
-        const metadata: VideoCurveMetadata = {
-          duration: effectiveInputDuration,
-          bitrate: source.bitrate ?? 0,
-          frameRate: source.frameRate,
-        };
-        const shouldAdaptCurve = typeof easingOption === 'string' && easingOption === DEFAULT_EASING;
-        const adaptiveSelection = shouldAdaptCurve ? selectAdaptiveEasing(metadata) : null;
+        // Use the selected easing curve as-is. An earlier "adaptive" override
+        // silently swapped the default easeInOutSine for a more dramatic curve
+        // on high-fps / high-bitrate sources — but those curves
+        // (easeInQuartOutQuad, easeInExpoOutCubic) have very flat ease-in
+        // regions that hold the first frame of a section for ~0.25s at 60fps,
+        // which reads as dropped/frozen frames at every section boundary. The
+        // user's chosen curve is respected instead.
         const easingFunc: EasingFunction =
-          adaptiveSelection?.easingFunction ??
-          (typeof easingOption === 'string' ? getEasingFunction(easingOption) : easingOption);
+          typeof easingOption === 'string' ? getEasingFunction(easingOption) : easingOption;
 
         updateProgress(
           'processing',
-          `Metadata analyzed (${effectiveInputDuration.toFixed(2)}s @ ${source.frameRate.toFixed(1)}fps)` +
-            (adaptiveSelection ? ` -> ${adaptiveSelection.easingName}` : ''),
+          `Metadata analyzed (${effectiveInputDuration.toFixed(2)}s @ ${source.frameRate.toFixed(1)}fps)`,
           18
         );
         throwIfAborted(signal);
@@ -285,18 +277,27 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
               outputSample.close();
             };
 
-            // Forward, sequential decode of the section. Iterating samples()
-            // decodes frames in presentation order and drains the decoder to
-            // EOS, so the true final frames are emitted even on platforms
-            // (notably Android MediaCodec) that drop end-of-range frames under
-            // the per-timestamp seek path — the old samplesAtTimestamps + hold-
-            // frame approach froze the eased ending on an early frame there.
-            // Because the eased timestamps are monotonic, we merge them against
-            // the forward stream in a single pass: each output slot shows the
-            // last decoded frame whose timestamp is <= the eased time it wants
-            // (the streaming form of lib/speed-curve mapDesiredToSourceIndices).
+            // Forward, sequential decode of the section. We merge the monotonic
+            // eased timestamps against the in-order frame stream in a single
+            // pass: each output slot shows the last decoded frame whose
+            // timestamp is <= the eased time it wants (the streaming form of
+            // lib/speed-curve mapDesiredToSourceIndices).
+            //
+            // Decode a grace zone PAST the section end. Android MediaCodec (esp.
+            // HEVC) otherwise drops the last few frames of a bounded decode
+            // range: it doesn't emit frames near the range end until it's fed
+            // enough following packets, and mediabunny stops feeding / discards
+            // frames once one lands at/after the range end. Both desktop
+            // decoders and — critically — the frames we actually need (all
+            // strictly before spanEnd) get emitted when we push the decode end
+            // well past spanEnd. The merge still only emits frames up to the
+            // eased end-clamp (< spanEnd), so the extra frames are decoded but
+            // never used; output content is unchanged. This is why the ending
+            // froze on Android but not on desktop.
             const TS_EPS = 1e-9;
-            const sampleIterator = sink.samples(spanStart, spanEnd)[Symbol.asyncIterator]();
+            const DECODE_TAIL_MARGIN = 1.0; // seconds past spanEnd to keep decoding
+            const decodeRangeEnd = Math.min(source.endTimestamp, spanEnd + DECODE_TAIL_MARGIN);
+            const sampleIterator = sink.samples(spanStart, decodeRangeEnd)[Symbol.asyncIterator]();
             const pullSample = async (): Promise<VideoSample | null> => {
               const next = await sampleIterator.next();
               return next.done ? null : next.value;

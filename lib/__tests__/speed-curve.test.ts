@@ -7,10 +7,8 @@ import {
   calculateWarpedDuration,
   validateWarpFunction,
   analyzeWarpCurve,
-  selectAdaptiveEasing,
   buildEasedSourceTimestamps,
   mapDesiredToSourceIndices,
-  type VideoCurveMetadata,
 } from '@/lib/speed-curve';
 import { easing, getAllEasingNames, type EasingFunction } from '@/lib/easing-functions';
 
@@ -339,101 +337,6 @@ describe('analyzeWarpCurve', () => {
   });
 });
 
-describe('selectAdaptiveEasing', () => {
-  const meta = (duration: number, frameRate: number, bitrateMbps: number): VideoCurveMetadata => ({
-    duration,
-    frameRate,
-    bitrate: bitrateMbps * 1_000_000,
-  });
-
-  it('short duration selects gentle easeInOutQuad', () => {
-    const sel = selectAdaptiveEasing(meta(2, 30, 8));
-    expect(sel.easingName).toBe('easeInOutQuad');
-    expect(sel.profile).toBe('gentle');
-    expect(sel.easingFunction).toBe(easing.easeInOutQuad);
-  });
-
-  it('low frame rate selects gentle easeInOutQuad', () => {
-    const sel = selectAdaptiveEasing(meta(5, 15, 8));
-    expect(sel.easingName).toBe('easeInOutQuad');
-    expect(sel.profile).toBe('gentle');
-  });
-
-  it('low bitrate selects gentle easeInOutQuad', () => {
-    const sel = selectAdaptiveEasing(meta(5, 30, 2));
-    expect(sel.easingName).toBe('easeInOutQuad');
-    expect(sel.profile).toBe('gentle');
-  });
-
-  it('mid-tier sources get balanced curves', () => {
-    const low = selectAdaptiveEasing(meta(5, 25, 6));
-    expect(low.easingName).toBe('easeInOutCubic');
-    expect(low.profile).toBe('balanced');
-
-    const mid = selectAdaptiveEasing(meta(5, 30, 6));
-    expect(mid.easingName).toBe('easeInQuartOutQuad');
-    expect(mid.profile).toBe('balanced');
-  });
-
-  it('high fps + high bitrate selects dynamic easeInExpoOutCubic', () => {
-    const sel = selectAdaptiveEasing(meta(5, 60, 12));
-    expect(sel.easingName).toBe('easeInExpoOutCubic');
-    expect(sel.profile).toBe('dynamic');
-    expect(sel.easingFunction).toBe(easing.easeInExpoOutCubic);
-  });
-
-  it('45fps / 8Mbps also lands on dynamic easeInExpoOutCubic', () => {
-    const sel = selectAdaptiveEasing(meta(5, 45, 8));
-    expect(sel.easingName).toBe('easeInExpoOutCubic');
-    expect(sel.profile).toBe('dynamic');
-  });
-
-  it('duration >= 7 escalates a balanced profile to dynamic', () => {
-    const sel = selectAdaptiveEasing(meta(8, 25, 4));
-    expect(sel.easingName).toBe('easeInExpoOutCubic');
-    expect(sel.profile).toBe('dynamic');
-  });
-
-  it('duration >= 7 does NOT escalate a gentle profile', () => {
-    const sel = selectAdaptiveEasing(meta(9, 15, 8));
-    expect(sel.easingName).toBe('easeInOutQuad');
-    expect(sel.profile).toBe('gentle');
-  });
-
-  it('NaN metadata falls back to defaults without throwing (gentle)', () => {
-    const sel = selectAdaptiveEasing(meta(NaN, NaN, NaN));
-    // duration falls back to 1 (<= 2.4) and bitrate to 0, so gentle wins
-    expect(sel.easingName).toBe('easeInOutQuad');
-    expect(sel.profile).toBe('gentle');
-    expect(sel.easingFunction).toBe(easing.easeInOutQuad);
-  });
-
-  it('negative metadata falls back to defaults without throwing', () => {
-    const sel = selectAdaptiveEasing({ duration: -5, frameRate: -10, bitrate: -1 });
-    expect(sel.easingName).toBe('easeInOutQuad');
-    expect(sel.profile).toBe('gentle');
-  });
-
-  it('invalid bitrate forces gentle even with a good fps and duration', () => {
-    const sel = selectAdaptiveEasing({ duration: 5, frameRate: 60, bitrate: NaN });
-    expect(sel.profile).toBe('gentle');
-  });
-
-  it('always returns the function matching easingName', () => {
-    const cases: VideoCurveMetadata[] = [
-      meta(2, 30, 8),
-      meta(5, 25, 6),
-      meta(5, 30, 6),
-      meta(5, 60, 12),
-      meta(8, 25, 4),
-      meta(NaN, NaN, NaN),
-    ];
-    for (const m of cases) {
-      const sel = selectAdaptiveEasing(m);
-      expect(sel.easingFunction).toBe(easing[sel.easingName]);
-    }
-  });
-});
 
 describe('buildEasedSourceTimestamps', () => {
   const linear: EasingFunction = (t) => t;

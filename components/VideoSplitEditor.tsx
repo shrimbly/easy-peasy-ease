@@ -137,14 +137,12 @@ export function VideoSplitEditor({
       </div>
 
       {/* Controls */}
-      <aside className="flex flex-col w-full lg:w-[400px] xl:w-[440px] shrink-0 rounded-xl border border-border bg-secondary/30 p-6 gap-6 lg:sticky lg:top-6 lg:self-start">
+      <aside className="flex flex-col w-full lg:w-[400px] xl:w-[440px] shrink-0 rounded-xl border border-border bg-secondary/30 p-6 gap-5 lg:sticky lg:top-6 lg:self-start">
         <div className="flex items-center gap-2">
           <Scissors className="h-5 w-5 text-primary" />
           <div>
             <h2 className="text-xl font-bold text-foreground">Split into sections</h2>
-            <p className="text-xs text-muted-foreground">
-              Each section gets its own ease curve, then they play back to back.
-            </p>
+            <p className="text-xs text-muted-foreground">Each eased on its own, played in sequence.</p>
           </div>
         </div>
 
@@ -189,9 +187,6 @@ export function VideoSplitEditor({
             <Wand2 className="h-4 w-4" />
             Split evenly every {sectionLength}s
           </Button>
-          <p className="text-[11px] text-muted-foreground">
-            Then fine-tune by dragging split points, or tap “Split at playhead” to add one.
-          </p>
         </div>
 
         {/* Per-section defaults */}
@@ -213,14 +208,10 @@ export function VideoSplitEditor({
             disabled={isBusy}
             className="h-2 w-full cursor-pointer rounded-full bg-primary/30"
           />
-          <p className="text-[11px] text-muted-foreground">
-            The output length each section is retimed to. Shorter than its source = a speed-up with
-            eased in/out.
-          </p>
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="section-easing">Ease curve</Label>
+          <Label htmlFor="section-easing">Starting ease curve</Label>
           <select
             id="section-easing"
             value={easingPreset}
@@ -234,32 +225,23 @@ export function VideoSplitEditor({
               </option>
             ))}
           </select>
-          <p className="text-[11px] text-muted-foreground">
-            The starting curve for every section. Tune each one individually after rendering.
-          </p>
         </div>
 
         {/* Summary */}
-        <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Sections</span>
-            <span className="font-semibold tabular-nums">{sections.length}</span>
-          </div>
-          <div className="mt-1 flex items-center justify-between">
-            <span className="text-muted-foreground">Avg source length</span>
-            <span className="tabular-nums">{avgSection.toFixed(1)}s</span>
-          </div>
-          <div className="mt-1 flex items-center justify-between">
-            <span className="text-muted-foreground">Output length</span>
-            <span className="font-semibold tabular-nums">{formatTime(totalOutput)}</span>
+        <div className="rounded-lg border border-border/60 bg-background/40 px-3 py-2 text-xs">
+          <div className="flex items-center justify-between tabular-nums">
+            <span className="text-muted-foreground">
+              {sections.length} section{sections.length === 1 ? '' : 's'} · avg {avgSection.toFixed(1)}s
+            </span>
+            <span className="font-semibold">{formatTime(totalOutput)} total</span>
           </div>
           {sections.length >= MAX_SECTIONS && (
-            <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+            <p className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
               At the {MAX_SECTIONS}-section maximum.
             </p>
           )}
           {sections.some((s) => s.duration < MIN_SECTION_DURATION + 0.05) && (
-            <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+            <p className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
               Some sections are very short.
             </p>
           )}

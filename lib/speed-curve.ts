@@ -10,18 +10,10 @@ const INVERSE_TOLERANCE = 1e-6;
 const INVERSE_MAX_ITERATIONS = 32;
 const MONOTONICITY_SAMPLES = 256;
 const MONOTONICITY_TOLERANCE = 1e-6;
-const DEFAULT_METADATA_FPS = 30;
-const BITS_PER_MEGABIT = 1_000_000;
 
 const inverseCache = new WeakMap<EasingFunction, EasingFunction | null>();
 const monotonicityCache = new WeakMap<EasingFunction, boolean>();
 const warnedNonMonotonic = new WeakSet<EasingFunction>();
-
-export interface VideoCurveMetadata {
-  duration: number;
-  bitrate: number;
-  frameRate: number;
-}
 
 export interface EasedSampleParams {
   /** Absolute track time (s) where this section begins. */
@@ -103,61 +95,6 @@ export function mapDesiredToSourceIndices(
   return result;
 }
 
-export type AdaptiveCurveProfile = 'gentle' | 'balanced' | 'dynamic';
-
-export interface AdaptiveEasingSelection {
-  easingName: keyof typeof easing;
-  easingFunction: EasingFunction;
-  profile: AdaptiveCurveProfile;
-}
-
-/**
- * Choose an easing function based on media metadata so higher fidelity sources
- * get a more dramatic curve while low-fps/bitrate inputs stay gentle.
- */
-export function selectAdaptiveEasing(metadata: VideoCurveMetadata): AdaptiveEasingSelection {
-  const duration = Number.isFinite(metadata.duration) && metadata.duration > 0
-    ? metadata.duration
-    : 1;
-  const frameRate = Number.isFinite(metadata.frameRate) && metadata.frameRate > 0
-    ? metadata.frameRate
-    : DEFAULT_METADATA_FPS;
-  const bitrate = Number.isFinite(metadata.bitrate) && metadata.bitrate > 0
-    ? metadata.bitrate
-    : 0;
-  const bitrateMbps = bitrate / BITS_PER_MEGABIT;
-
-  let easingName: keyof typeof easing = 'easeInQuartOutQuad';
-  let profile: AdaptiveCurveProfile = 'balanced';
-
-  if (duration <= 2.4 || frameRate < 20 || bitrateMbps < 3) {
-    easingName = 'easeInOutQuad';
-    profile = 'gentle';
-  } else if (frameRate < 28 || bitrateMbps < 5) {
-    easingName = 'easeInOutCubic';
-    profile = 'balanced';
-  } else if (frameRate < 40 || bitrateMbps < 7) {
-    easingName = 'easeInQuartOutQuad';
-    profile = 'balanced';
-  } else if (frameRate < 50 || bitrateMbps < 10) {
-    easingName = 'easeInExpoOutCubic';
-    profile = 'dynamic';
-  } else {
-    easingName = 'easeInExpoOutCubic';
-    profile = 'dynamic';
-  }
-
-  if (duration >= 7 && profile !== 'gentle') {
-    easingName = 'easeInExpoOutCubic';
-    profile = 'dynamic';
-  }
-
-  return {
-    easingName,
-    easingFunction: easing[easingName],
-    profile,
-  };
-}
 
 function isMonotonicIncreasing(func: EasingFunction): boolean {
   const cached = monotonicityCache.get(func);
