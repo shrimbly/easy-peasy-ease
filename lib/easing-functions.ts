@@ -3,6 +3,8 @@
  * Based on easings.net standards
  */
 
+import { PRESET_BEZIERS } from './easing-presets';
+
 export type EasingFunction = (t: number) => number;
 
 const createAsymmetricEase = (easeIn: EasingFunction, easeOut: EasingFunction): EasingFunction => {
@@ -197,4 +199,20 @@ export function getEasingFunction(name: string): EasingFunction {
  */
 export function getAllEasingNames(): string[] {
   return Object.keys(easing);
+}
+
+/**
+ * Resolve any easing reference to a callable function. Preset names (the
+ * cubic-bezier curves in lib/easing-presets) take priority; other strings
+ * fall back to the named math functions above.
+ */
+export function resolveEasing(easingRef: string | EasingFunction): EasingFunction {
+  if (typeof easingRef !== 'string') {
+    return easingRef;
+  }
+  const bezier = PRESET_BEZIERS[easingRef as keyof typeof PRESET_BEZIERS];
+  if (bezier) {
+    return createBezierEasing(bezier[0], bezier[1], bezier[2], bezier[3]);
+  }
+  return getEasingFunction(easingRef);
 }

@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
+import { analyzeBeatsFromChannels, type BeatAnalysis } from '@/lib/beat-detection';
 
 export interface WaveformData {
   sampleRate: number;
   duration: number;
   peaks: number[];
+  /** Tempo analysis of the track; null when no confident beat grid exists. */
+  beats: BeatAnalysis | null;
 }
 
 /**
@@ -95,10 +98,16 @@ export function useAudioVisualization(audioFile: File | Blob | null) {
         // song ever previewed in memory for the whole session.
         const peaks = calculatePeaks(channelData, 256);
 
+        // Beat analysis runs here so it shares this one decode; like the
+        // peaks it must be computed before the PCM is dropped and before the
+        // result is cached (cached entries are never recomputed).
+        const beats = analyzeBeatsFromChannels(channelData, audioBuffer.sampleRate);
+
         const nextWaveform: WaveformData = {
           sampleRate: audioBuffer.sampleRate,
           duration: audioBuffer.duration,
           peaks,
+          beats,
         };
 
         if (cacheKey) {

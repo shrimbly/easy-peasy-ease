@@ -4,7 +4,7 @@
  * Now supports 30+ easing functions from the easing-functions library
  */
 
-import { easing, type EasingFunction, getEasingFunction } from './easing-functions';
+import { easing, type EasingFunction, resolveEasing } from './easing-functions';
 
 const INVERSE_TOLERANCE = 1e-6;
 const INVERSE_MAX_ITERATIONS = 32;
@@ -206,7 +206,7 @@ export function warpTime(
 ): number {
   // Resolve easing function if string is provided
   const easingFunc = typeof easingFunction === 'string'
-    ? getEasingFunction(easingFunction)
+    ? resolveEasing(easingFunction)
     : easingFunction;
 
   // Degenerate inputs produce a degenerate (but finite) mapping

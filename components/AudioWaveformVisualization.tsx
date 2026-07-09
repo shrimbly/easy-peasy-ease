@@ -6,6 +6,13 @@ import { Button } from '@/components/ui/button';
 import { Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AudioScrubber } from '@/components/ui/waveform';
+import { BeatSyncControl } from '@/components/BeatSyncControl';
+import { MIN_ANALYSIS_SECONDS } from '@/lib/beat-detection';
+import {
+  emphasisAnchorVideoTime,
+  firstBeatVideoTime,
+  type BeatSubdivision,
+} from '@/lib/beat-sync';
 
 interface AudioWaveformVisualizationProps {
   waveformData: WaveformData | null;
@@ -21,7 +28,18 @@ interface AudioWaveformVisualizationProps {
   offset?: number;
   onOffsetChange?: (offset: number) => void;
   onOffsetCommit?: () => void;
+  /** Active beat-snap subdivision; 0 = off. */
+  beatSubdivision?: BeatSubdivision | 0;
+  onBeatSubdivisionChange?: (value: BeatSubdivision | 0) => void;
+  /** Re-render CTA inside the beat pill (shown while snapping is active). */
+  onBeatApply?: () => void;
+  isBeatUpdating?: boolean;
 }
+
+const positiveModulo = (value: number, modulus: number): number => {
+  const result = value % modulus;
+  return result < 0 ? result + modulus : result;
+};
 
 export function AudioWaveformVisualization({
   waveformData,
@@ -37,6 +55,10 @@ export function AudioWaveformVisualization({
   offset = 0,
   onOffsetChange,
   onOffsetCommit,
+  beatSubdivision = 0,
+  onBeatSubdivisionChange,
+  onBeatApply,
+  isBeatUpdating = false,
 }: AudioWaveformVisualizationProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [localOffset, setLocalOffset] = useState<number | null>(null);
@@ -131,6 +153,8 @@ export function AudioWaveformVisualization({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!onSelect) return;
+    // Keys bubbling from the remove button must activate it, not the track.
+    if (event.target !== event.currentTarget) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       onSelect();
@@ -172,6 +196,47 @@ export function AudioWaveformVisualization({
   // Check if there's more audio beyond what's visible
   const hasMoreAudioAtEnd = audioEndTime < audioDurationSeconds;
 
+  // Beat ticks: faint lines on every beat (anchored to the audio, so they
+  // follow the waveform live while dragging), plus brighter lines marking the
+  // active every-Nth-beat grid section boundaries snap to. Rendered as
+  // repeating gradients — two layers regardless of beat count. The layer is
+  // clipped to the source audio's span: past its end the track loop-fills
+  // from an arbitrary point, so the extrapolated grid would be a lie there.
+  const beats = waveformData.beats;
+  const beatTicks = (() => {
+    if (!beats || pixelsPerSecond <= 0) {
+      return null;
+    }
+    const periodPx = beats.period * pixelsPerSecond;
+    if (periodPx < 4) {
+      return null; // zoomed out too far for ticks to read
+    }
+    const layerStartTime = Math.max(0, effectiveOffset); // where audio begins
+    const layerEndTime = Math.min(
+      timelineDuration,
+      effectiveOffset + audioDurationSeconds
+    );
+    const leftPx = layerStartTime * pixelsPerSecond;
+    const widthPx = Math.min(trackWidth, layerEndTime * pixelsPerSecond) - leftPx;
+    if (widthPx <= 0) {
+      return null;
+    }
+    const firstBeat = firstBeatVideoTime(beats, effectiveOffset);
+    const faintPhasePx =
+      positiveModulo(firstBeat - layerStartTime, beats.period) * pixelsPerSecond;
+    let emphasis: { spacingPx: number; phasePx: number } | null = null;
+    if (beatSubdivision !== 0) {
+      const groupPeriod = beats.period * beatSubdivision;
+      const anchor = emphasisAnchorVideoTime(beats, effectiveOffset);
+      emphasis = {
+        spacingPx: groupPeriod * pixelsPerSecond,
+        phasePx:
+          positiveModulo(anchor - layerStartTime, groupPeriod) * pixelsPerSecond,
+      };
+    }
+    return { leftPx, widthPx, periodPx, faintPhasePx, emphasis };
+  })();
+
   return (
     <div
       className="w-full space-y-2"
@@ -198,6 +263,9 @@ export function AudioWaveformVisualization({
             variant="ghost"
             size="icon"
             className="absolute right-2 top-2 z-10 text-muted-foreground hover:text-foreground hover:bg-secondary/80"
+            // pointerdown must not reach the track: its drag handler captures
+            // the pointer, which retargets the click away from this button.
+            onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();
               onRemove();
@@ -234,6 +302,54 @@ export function AudioWaveformVisualization({
             </div>
           )}
         </div>
+
+        {/* Beat grid */}
+        {beatTicks && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0"
+            style={{ left: `${beatTicks.leftPx}px`, width: `${beatTicks.widthPx}px` }}
+          >
+            <div
+              className="absolute inset-0"
+              style={{
+                backgroundImage: `repeating-linear-gradient(90deg, color-mix(in srgb, var(--primary) 30%, transparent) 0 1px, transparent 1px ${beatTicks.periodPx}px)`,
+                backgroundPositionX: `${beatTicks.faintPhasePx}px`,
+              }}
+            />
+            {beatTicks.emphasis && (
+              <div
+                className="absolute inset-0"
+                style={{
+                  backgroundImage: `repeating-linear-gradient(90deg, color-mix(in srgb, var(--primary) 80%, transparent) 0 2px, transparent 2px ${beatTicks.emphasis.spacingPx}px)`,
+                  backgroundPositionX: `${beatTicks.emphasis.phasePx}px`,
+                }}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Beat snap pill; capped so it wraps instead of reaching under the
+            remove button on narrow tracks. */}
+        {beats && onBeatSubdivisionChange && (
+          <BeatSyncControl
+            bpm={beats.bpm}
+            period={beats.period}
+            value={beatSubdivision}
+            onValueChange={onBeatSubdivisionChange}
+            onApply={onBeatApply}
+            isUpdating={isBeatUpdating}
+            className="absolute left-2 top-2 z-10 max-w-[calc(100%-3.5rem)] flex-wrap"
+          />
+        )}
+        {/* Analysis ran on a full-length track but found no steady grid. */}
+        {!beats &&
+          onBeatSubdivisionChange &&
+          audioDurationSeconds >= MIN_ANALYSIS_SECONDS && (
+            <span className="pointer-events-none absolute left-2 top-2 z-10 rounded-md border border-border/70 bg-background/85 px-2 py-1 text-[10px] font-medium text-muted-foreground shadow-sm backdrop-blur-sm">
+              No steady beat
+            </span>
+          )}
         {hasMoreAudioAtEnd && (
           <div className="pointer-events-none absolute inset-y-0 right-0 flex w-24 items-center justify-end bg-gradient-to-l from-background/90 via-background/10 to-transparent pr-3">
             <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-background">

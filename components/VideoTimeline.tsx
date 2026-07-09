@@ -14,6 +14,12 @@ import { extractVideoThumbnail } from '@/lib/timeline-utils';
 
 export const TIMELINE_MIN_VISIBLE_SECONDS = 3;
 
+/** Horizontal breathing room inside the scroll viewport, so the first/last
+ *  clip and the waveform aren't hard against the container edges. All
+ *  time↔pixel math stays anchored to the inner track (x=0 at the gutter's
+ *  inside edge); only viewport-relative calculations offset by this. */
+const TIMELINE_GUTTER_PX = 12;
+
 const lerp = (start: number, end: number, value: number) =>
   start + (end - start) * value;
 
@@ -30,6 +36,9 @@ interface VideoTimelineProps {
   }) => ReactNode;
   zoomValue: number;
   onZoomChange: (value: number) => void;
+  /** Extra classes for the scroll viewport (e.g. to square corners when the
+   *  timeline is composed into a connected card). */
+  viewportClassName?: string;
 }
 
 interface ZoomSliderProps {
@@ -112,9 +121,16 @@ export function TimelineZoomSlider({ value, onValueChange, disabled }: ZoomSlide
       onMouseDown={handleMouseDown}
       onTouchStart={handleTouchStart}
     >
-      <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-muted-foreground/30" />
+      {/* Track + thumb match the themed range sliders: bright fill left of the
+          thumb, dim to the right, primary thumb with a background ring. */}
       <div
-        className="absolute top-1/2 h-5 w-5 -translate-y-1/2 -translate-x-1/2 rounded-full border border-primary/40 bg-primary shadow-lg transition-transform touch-none"
+        className="absolute left-0 right-0 top-1/2 h-2 -translate-y-1/2 rounded-full"
+        style={{
+          background: `linear-gradient(to right, var(--primary) ${value * 100}%, color-mix(in srgb, var(--primary) 25%, transparent) ${value * 100}%)`,
+        }}
+      />
+      <div
+        className="absolute top-1/2 h-4 w-4 -translate-y-1/2 -translate-x-1/2 rounded-full border-2 border-background bg-primary shadow transition-transform touch-none"
         style={{ left: `${value * 100}%` }}
       />
     </div>
@@ -130,6 +146,7 @@ export function VideoTimeline({
   renderAudioTrack,
   zoomValue,
   onZoomChange,
+  viewportClassName,
 }: VideoTimelineProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -143,6 +160,11 @@ export function VideoTimeline({
   const zoomDisabled = totalDuration === 0 || totalDuration <= TIMELINE_MIN_VISIBLE_SECONDS;
 
   const safeViewportWidth = viewportWidth || 0;
+  // Width actually available to track content once the gutters are taken out.
+  const contentViewportWidth = Math.max(
+    safeViewportWidth - TIMELINE_GUTTER_PX * 2,
+    0
+  );
   const normalizedZoom = clamp(zoomValue, 0, 1);
 
   const targetVisibleSeconds =
@@ -153,13 +175,13 @@ export function VideoTimeline({
       : lerp(totalDuration, TIMELINE_MIN_VISIBLE_SECONDS, normalizedZoom);
 
   const pixelsPerSecond =
-    safeViewportWidth > 0 && targetVisibleSeconds > 0
-      ? safeViewportWidth / targetVisibleSeconds
+    contentViewportWidth > 0 && targetVisibleSeconds > 0
+      ? contentViewportWidth / targetVisibleSeconds
       : 0;
 
   const rawTrackWidth =
-    totalDuration > 0 ? totalDuration * pixelsPerSecond : safeViewportWidth;
-  const trackWidth = Math.max(rawTrackWidth, safeViewportWidth);
+    totalDuration > 0 ? totalDuration * pixelsPerSecond : contentViewportWidth;
+  const trackWidth = Math.max(rawTrackWidth, contentViewportWidth);
   const playheadPosition = timeToPixels(normalizedTime, pixelsPerSecond);
   const tickCount = Math.max(Math.ceil(totalDuration) + 1, 1);
 
@@ -253,7 +275,8 @@ export function VideoTimeline({
     if (!viewportRef.current) return;
 
     const rect = viewportRef.current.getBoundingClientRect();
-    const clickX = e.clientX - rect.left + viewportRef.current.scrollLeft;
+    const clickX =
+      e.clientX - rect.left + viewportRef.current.scrollLeft - TIMELINE_GUTTER_PX;
     const newTime = pixelsToTime(clickX, pixelsPerSecond);
     const clampedTime = clamp(newTime, 0, totalDuration);
 
@@ -289,7 +312,8 @@ export function VideoTimeline({
       e.preventDefault();
 
       const rect = viewportRef.current.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left + viewportRef.current.scrollLeft;
+      const mouseX =
+        e.clientX - rect.left + viewportRef.current.scrollLeft - TIMELINE_GUTTER_PX;
       const newTime = pixelsToTime(mouseX, pixelsPerSecond);
       const clampedTime = clamp(newTime, 0, totalDuration);
 
@@ -314,22 +338,25 @@ export function VideoTimeline({
   // Keep the playhead visible by jumping the scroll position if it leaves the viewport
   useEffect(() => {
     const viewport = viewportRef.current;
+    const scrollableWidth = trackWidth + TIMELINE_GUTTER_PX * 2;
     if (
       !viewport ||
       safeViewportWidth === 0 ||
-      trackWidth <= safeViewportWidth ||
+      scrollableWidth <= safeViewportWidth ||
       isDragging
     ) {
       return;
     }
 
+    // A track position x renders at viewport offset GUTTER + x - scrollLeft.
     const scrollLeft = viewport.scrollLeft;
-    const viewportRight = scrollLeft + safeViewportWidth;
+    const visibleStart = scrollLeft - TIMELINE_GUTTER_PX;
+    const visibleEnd = scrollLeft + safeViewportWidth - TIMELINE_GUTTER_PX;
 
-    if (playheadPosition < scrollLeft || playheadPosition > viewportRight) {
-      const maxScroll = Math.max(trackWidth - safeViewportWidth, 0);
+    if (playheadPosition < visibleStart || playheadPosition > visibleEnd) {
+      const maxScroll = Math.max(scrollableWidth - safeViewportWidth, 0);
       const nextScroll = clamp(
-        playheadPosition - safeViewportWidth / 2,
+        playheadPosition + TIMELINE_GUTTER_PX - safeViewportWidth / 2,
         0,
         maxScroll
       );
@@ -339,7 +366,7 @@ export function VideoTimeline({
 
   const handleTimelineWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     const viewport = viewportRef.current;
-    if (!viewport || trackWidth <= safeViewportWidth) return;
+    if (!viewport || trackWidth + TIMELINE_GUTTER_PX * 2 <= safeViewportWidth) return;
 
     const isVerticalDominant = Math.abs(event.deltaY) > Math.abs(event.deltaX);
     if (!isVerticalDominant || event.deltaY === 0) return;
@@ -353,12 +380,18 @@ export function VideoTimeline({
       <div className="w-full min-w-0">
         <div
           ref={viewportRef}
-          className="timeline-scrollbar w-full max-w-full min-w-0 overflow-x-auto rounded-lg border border-border bg-secondary/30"
+          className={cn(
+            'timeline-scrollbar w-full max-w-full min-w-0 overflow-x-auto rounded-lg border border-border bg-secondary',
+            viewportClassName
+          )}
           onWheel={handleTimelineWheel}
         >
+          {/* w-max keeps the wrapper sized to the track, so the right-hand
+              gutter isn't collapsed by the overflow container. */}
+          <div className="w-max" style={{ padding: `0 ${TIMELINE_GUTTER_PX}px` }}>
           <div className="relative space-y-1 md:space-y-4" style={{ width: `${trackWidth}px` }}>
             {/* Time Ruler */}
-            <div className="relative h-5 md:h-8 border-b border-border/60 bg-background/40">
+            <div className="relative h-5 md:h-8 border-b border-border/60">
               {Array.from({ length: tickCount }, (_, index) => {
                 const tickPosition = timeToPixels(index, pixelsPerSecond);
                 return (
@@ -391,7 +424,7 @@ export function VideoTimeline({
                     <div
                       key={boundary.segment.id}
                       className={cn(
-                        'relative h-full flex-none border-r border-border/50 transition-all',
+                        'relative h-full flex-none border-r border-border/50 transition-[background-color,box-shadow,width]',
                         isSelected && 'ring-2 ring-primary ring-inset',
                         isPlaying && 'bg-primary/10'
                       )}
@@ -450,6 +483,7 @@ export function VideoTimeline({
                 })}
               </div>
             )}
+          </div>
           </div>
         </div>
       </div>

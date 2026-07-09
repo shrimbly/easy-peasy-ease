@@ -7,7 +7,7 @@
  * Usage: node run-e2e.mjs <baseURL>
  */
 import { chromium } from 'playwright';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, existsSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,12 +86,13 @@ async function finalize(page) {
   } catch {
     // No preflight dialog — fine.
   }
-  // Success = the editor appears (its Download button is unique to it).
+  // Success = the editor appears (its Clip/Audio/Export tab bar is unique to
+  // it; Download lives inside the Export tab on every viewport).
   // Failure = the persistent error dialog. NOTE: upload thumbnails also have
   // blob: video srcs, so a video[src^=blob:] check would false-positive.
   const result = await Promise.race([
     page
-      .waitForSelector('button:has-text("Download")', { timeout: 300_000 })
+      .waitForSelector('button[role="tab"]:has-text("Export")', { timeout: 300_000 })
       .then(() => 'ok'),
     page
       .waitForSelector('text=Render failed', { timeout: 300_000 })
@@ -101,6 +102,8 @@ async function finalize(page) {
 }
 
 async function downloadFinal(page, saveAs) {
+  // Download lives in the Export tab (same tabs UI on every viewport).
+  await page.locator('button[role="tab"]', { hasText: 'Export' }).click();
   const downloadPromise = page.waitForEvent('download', { timeout: 300_000 });
   await page.locator('button', { hasText: /^Download/ }).first().click();
   const download = await downloadPromise;
@@ -234,7 +237,7 @@ console.log('Scenario D: split one 12s video into 3 eased sections');
     // No preflight dialog — fine.
   }
   const outcome = await Promise.race([
-    page.waitForSelector('button:has-text("Download")', { timeout: 300_000 }).then(() => 'ok'),
+    page.waitForSelector('button[role="tab"]:has-text("Export")', { timeout: 300_000 }).then(() => 'ok'),
     page.waitForSelector('text=Render failed', { timeout: 300_000 }).then(() => 'error'),
   ]);
   check(outcome === 'ok', `split finalize succeeds (got: ${outcome})`);
@@ -302,8 +305,8 @@ console.log('Scenario E: split mode on a mobile viewport (touch input)');
   } catch {
     // No preflight dialog — fine.
   }
-  // On phones the editor shows a Clip/Audio/Export tab bar (Download lives in
-  // the Export tab, not a persistent footer), so success = the tab bar appears.
+  // The editor shows a Clip/Audio/Export tab bar on every viewport (Download
+  // lives in the Export tab), so success = the tab bar appears.
   const exportTab = page.locator('button[role="tab"]', { hasText: 'Export' });
   const outcome = await Promise.race([
     exportTab.waitFor({ state: 'visible', timeout: 300_000 }).then(() => 'ok'),
@@ -316,6 +319,102 @@ console.log('Scenario E: split mode on a mobile viewport (touch input)');
     const dl = page.locator('button', { hasText: /^Download/ }).first();
     await dl.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
     check(await dl.isVisible(), 'mobile: Download is reachable via the Export tab');
+  }
+  await context.close();
+}
+
+// ============================================================
+console.log('Scenario F: beat sync — detect 128 BPM, snap sections to every 2nd beat');
+{
+  // RMS (dB) of a time slice of the file's audio, via ffmpeg astats (which
+  // reports on stderr — spawnSync captures it on success, unlike execFileSync).
+  const rmsDb = (file, start, end) => {
+    const result = spawnSync(
+      'ffmpeg',
+      ['-i', file, '-af', `atrim=${start}:${end},astats=metadata=0`, '-f', 'null', '-'],
+      { encoding: 'utf8' }
+    );
+    const stderr = result.stderr ?? '';
+    const matches = [...stderr.matchAll(/RMS level dB:\s*(-?[\d.]+|-inf)/g)];
+    const last = matches.at(-1)?.[1]; // last match = Overall section
+    return last === '-inf' ? -120 : parseFloat(last ?? 'NaN');
+  };
+
+  const { context, page } = await freshPage(browser);
+  await uploadClips(page, [
+    join(fixtures, 'clip1.mp4'),
+    join(fixtures, 'clip2.mp4'),
+    join(fixtures, 'clip3.mp4'),
+  ]);
+  await setPreviewQuality(page, true); // fast first render; download re-renders full
+  const outcome = await finalize(page);
+  check(outcome === 'ok', `finalize succeeds (got: ${outcome})`);
+
+  if (outcome === 'ok') {
+    // Upload the 128 BPM kick track; dismiss the mix prompt (the beat pill
+    // has its own update button — that's the path under test).
+    await page.setInputFiles('#audio-input', join(fixtures, 'beats128.wav'));
+    const later = page.locator('[data-slot="dialog-content"] button:has-text("Later")');
+    await later.waitFor({ state: 'visible', timeout: 10_000 });
+    await later.click();
+
+    // Beat pill appears with the detected tempo.
+    const bpmReadout = page.locator('[aria-label="128 beats per minute"]');
+    await bpmReadout.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+    check(await bpmReadout.isVisible(), 'pill shows detected 128 BPM');
+
+    // Baseline: every section is the default 1.5s.
+    const durationInput = page.locator('input[type="number"]:visible').first();
+    check((await durationInput.inputValue()) === '1.50', 'section duration starts at 1.50');
+
+    // Snap to every 2nd beat: 2 beats = 0.9375s, 1.5s → 2 groups = 1.875s,
+    // quantized cumulatively on the 30fps grid (exact at 30 AND 60fps render)
+    // → first section 56/30 ≈ 1.87s.
+    const snap2 = page.locator('button[aria-label="Every 2nd beat"]');
+    await snap2.click();
+    await page.waitForFunction(
+      () => document.querySelector('input[type="number"]')?.value === '1.87',
+      { timeout: 5_000 }
+    ).catch(() => {});
+    check((await durationInput.inputValue()) === '1.87', 'snap suggests 1.87s (4 beats, frame-exact)');
+
+    // Toggling off restores the baseline; re-engage for the render.
+    await snap2.click();
+    check((await durationInput.inputValue()) === '1.50', 'toggle off restores 1.50');
+    await snap2.click();
+    check((await durationInput.inputValue()) === '1.87', 're-snap suggests 1.87 again');
+
+    // Render via the pill's update button, then download (full-quality re-render).
+    await page.locator('button[aria-label="Update video with beat-synced sections"]').click();
+    await page.waitForFunction(
+      () => !/Processing\.\.\./.test(document.body.innerText),
+      { timeout: 300_000 }
+    );
+    check(!(await page.isVisible('text=Render failed')), 'beat-synced update succeeds');
+
+    const file = join(outDir, 'scenarioF.mp4');
+    await downloadFinal(page, file);
+    const probe = ffprobe(file);
+    const v = probe.streams.find((s) => s.codec_type === 'video');
+    const a = probe.streams.find((s) => s.codec_type === 'audio');
+    const duration = parseFloat(probe.format.duration);
+    // Sections: (56 + 57 + 56)/30s = 112 + 114 + 112 frames at 60fps = 5.6333s.
+    check(Math.abs(duration - 5.633) < 0.3, `duration ~5.63s: 3 beat-snapped sections (got ${duration})`);
+    const frames = parseInt(v?.nb_read_frames ?? '0', 10);
+    check(Math.abs(frames - 338) <= 8, `~338 frames at 60fps (got ${frames})`);
+    check(!!a, `audio track present (got ${a?.codec_name})`);
+
+    // The point of the feature: the first section boundary (~1.883s) must land
+    // on a kick. Offset alignment puts beats at k*0.46875s of video time, so
+    // there is a kick at 1.875s — and only decay tail mid-beat at ~2.1s. If
+    // the offset were not applied, beats would sit at 0.152+k*0.46875 (2.027s)
+    // instead: the beat window would be quiet and the control window loud.
+    const beatRms = rmsDb(file, 1.86, 1.95);
+    const controlRms = rmsDb(file, 2.10, 2.25);
+    check(
+      Number.isFinite(beatRms) && Number.isFinite(controlRms) && beatRms - controlRms >= 10,
+      `kick lands on the section boundary (beat ${beatRms}dB vs mid-beat ${controlRms}dB)`
+    );
   }
   await context.close();
 }

@@ -5,6 +5,8 @@ import { ArrowLeft, Loader2, Pause, Play, Scissors, Wand2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { RangeSlider } from '@/components/ui/range-slider';
+import { EasingCurvePicker } from '@/components/ui/easing-curve-picker';
 import { SplitTrack } from '@/components/SplitTrack';
 import { useVideoPlayback } from '@/hooks/useVideoPlayback';
 import { formatTime } from '@/lib/timeline-utils';
@@ -90,10 +92,12 @@ export function VideoSplitEditor({
         : null;
 
   return (
-    <div className="w-full h-full flex flex-col lg:flex-row gap-4 lg:gap-6 max-w-[1800px] mx-auto">
+    // On lg the editor fills the viewport (minus the 8px page frame); the
+    // video preview flexes to absorb the height and letterboxes itself.
+    <div className="w-full flex flex-col lg:flex-row gap-4 lg:gap-2 max-w-[1800px] mx-auto lg:h-[calc(100vh-1rem)]">
       {/* Preview + track */}
-      <div className="flex-1 flex flex-col gap-4 min-w-0">
-        <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black shadow-xl">
+      <div className="flex-1 flex flex-col gap-4 min-w-0 lg:min-h-0">
+        <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black shadow-xl lg:aspect-auto lg:flex-1 lg:min-h-0">
           <video
             ref={videoRef}
             src={url}
@@ -137,12 +141,12 @@ export function VideoSplitEditor({
       </div>
 
       {/* Controls */}
-      <aside className="flex flex-col w-full lg:w-[400px] xl:w-[440px] shrink-0 rounded-xl border border-border bg-secondary/30 p-6 gap-5 lg:sticky lg:top-6 lg:self-start">
+      <aside className="flex flex-col w-full lg:w-[360px] xl:w-[400px] shrink-0 rounded-xl border border-border bg-secondary p-4 gap-4 lg:p-6 lg:gap-5 lg:sticky lg:top-2 lg:self-start">
         <div className="flex items-center gap-2">
           <Scissors className="h-5 w-5 text-primary" />
           <div>
-            <h2 className="text-xl font-bold text-foreground">Split into sections</h2>
-            <p className="text-xs text-muted-foreground">Each eased on its own, played in sequence.</p>
+            <h2 className="text-xl font-bold text-balance text-foreground">Split into sections</h2>
+            <p className="text-xs text-pretty text-muted-foreground">Each eased on its own, played in sequence.</p>
           </div>
         </div>
 
@@ -155,16 +159,15 @@ export function VideoSplitEditor({
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <input
+            <RangeSlider
               id="section-length"
-              type="range"
               min={SECTION_LENGTH_MIN}
               max={sectionLengthMax}
               step={0.5}
               value={Math.min(sectionLength, sectionLengthMax)}
               onChange={(e) => setSectionLength(Number(e.target.value))}
               disabled={isBusy}
-              className="h-2 flex-1 cursor-pointer rounded-full bg-primary/30"
+              className="flex-1"
             />
             <input
               type="number"
@@ -197,34 +200,29 @@ export function VideoSplitEditor({
               {outputDuration.toFixed(2)}s
             </span>
           </div>
-          <input
+          <RangeSlider
             id="output-duration"
-            type="range"
             min={0.3}
             max={4}
             step={0.05}
             value={outputDuration}
             onChange={(e) => setOutputDuration(Number(e.target.value))}
             disabled={isBusy}
-            className="h-2 w-full cursor-pointer rounded-full bg-primary/30"
+            className="w-full"
           />
         </div>
 
         <div className="space-y-2">
           <Label htmlFor="section-easing">Starting ease curve</Label>
-          <select
+          <EasingCurvePicker
             id="section-easing"
             value={easingPreset}
-            onChange={(e) => setEasingPreset(e.target.value)}
+            options={easingOptions}
+            onChange={setEasingPreset}
             disabled={isBusy}
-            className="w-full rounded-md border border-border bg-background py-2 pl-3 pr-8 text-sm"
-          >
-            {easingOptions.map((preset) => (
-              <option key={preset} value={preset}>
-                {preset}
-              </option>
-            ))}
-          </select>
+            align="start"
+            fullWidth
+          />
         </div>
 
         {/* Summary */}

@@ -9,7 +9,6 @@ interface VideoPlaybackControlsProps {
   currentTime: number;
   duration: number;
   onPlayPause: () => void;
-  createdAt?: Date;
   videoSize?: number;
   actions?: ReactNode;
 }
@@ -19,12 +18,11 @@ export function VideoPlaybackControls({
   currentTime,
   duration,
   onPlayPause,
-  createdAt,
   videoSize,
   actions,
 }: VideoPlaybackControlsProps) {
   return (
-    <div className="flex w-full flex-wrap items-center justify-between gap-2 md:gap-4 px-0 md:px-2">
+    <div className="flex w-full flex-wrap items-center justify-between gap-2 md:gap-4">
       <div className="flex items-center gap-2 md:gap-4 flex-1 min-w-0">
         <button
           onClick={onPlayPause}
@@ -32,9 +30,9 @@ export function VideoPlaybackControls({
           aria-label={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? (
-            <Pause className="h-6 w-6 md:h-9 md:w-9" />
+            <Pause className="h-5 w-5 md:h-6 md:w-6" />
           ) : (
-            <Play className="h-6 w-6 md:h-9 md:w-9 ml-1" />
+            <Play className="h-5 w-5 md:h-6 md:w-6 ml-0.5" />
           )}
         </button>
 
@@ -47,14 +45,9 @@ export function VideoPlaybackControls({
         </div>
       </div>
       
-      {(videoSize !== undefined || createdAt) && (
+      {videoSize !== undefined && (
         <div className="hidden sm:flex items-center gap-4 text-xs text-muted-foreground shrink-0">
-          {videoSize !== undefined && (
-            <span>Size: {(videoSize / 1024 / 1024).toFixed(2)}MB</span>
-          )}
-          {createdAt && (
-            <span>Created: {createdAt.toLocaleTimeString()}</span>
-          )}
+          <span>Size: {(videoSize / 1024 / 1024).toFixed(2)}MB</span>
         </div>
       )}
     </div>

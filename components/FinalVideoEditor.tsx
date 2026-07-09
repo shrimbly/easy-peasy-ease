@@ -13,7 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Loader2, Play } from 'lucide-react';
+import { Download, Loader2 } from 'lucide-react';
 import { getPresetBezier } from '@/lib/easing-presets';
 import { useVideoPlayback } from '@/hooks/useVideoPlayback';
 import { VideoPlaybackControls } from '@/components/VideoPlaybackControls';
@@ -26,7 +26,15 @@ import { getCurrentSegment, getTotalDuration } from '@/lib/timeline-utils';
 import { AudioUploadBox } from '@/components/AudioUploadBox';
 import { AudioWaveformVisualization } from '@/components/AudioWaveformVisualization';
 import { useAudioVisualization } from '@/hooks/useAudioVisualization';
+import {
+  alignOffsetToBeatGrid,
+  quantizeOffsetToNearestBeat,
+  snapDurationsToBeatGrid,
+  type BeatSubdivision,
+} from '@/lib/beat-sync';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { RangeSlider } from '@/components/ui/range-slider';
+import { EasingCurvePicker } from '@/components/ui/easing-curve-picker';
 
 const LOOP_OPTIONS = [1, 2, 3] as const;
 const BEZIER_THROTTLE_MS = 75;
@@ -41,8 +49,11 @@ interface FinalVideoEditorProps {
   onPresetChange: (id: number, preset: string, applyAll?: boolean) => void;
   onBezierChange: (id: number, bezier: [number, number, number, number], applyAll?: boolean) => void;
   defaultBezier: [number, number, number, number];
-  onCloneSegmentSettings: (id: number) => void;
-  onUpdateVideo: (options?: { audioBlob?: Blob; audioSettings?: AudioProcessingOptions; quality?: RenderQuality; updateHint?: UpdateReason }) => void;
+  /** Copies the segment's settings to all segments; returns the resulting
+   *  segment list so an immediate re-render can use it (parent state updates
+   *  are async, so reading `segments` right after cloning would be stale). */
+  onCloneSegmentSettings: (id: number) => TransitionVideo[] | undefined;
+  onUpdateVideo: (options?: { audioBlob?: Blob; audioSettings?: AudioProcessingOptions; quality?: RenderQuality; updateHint?: UpdateReason; segments?: TransitionVideo[] }) => void;
   isUpdating: boolean;
   onExit: () => void;
   onDownload: () => void;
@@ -80,7 +91,8 @@ function FinalVideoEditorComponent({
     () => segments.find((segment) => segment.id === selectedSegmentId) ?? null,
     [segments, selectedSegmentId]
   );
-  const [applyAll, setApplyAll] = useState(false);
+  // Which update CTA was pressed last — used to place the busy spinner.
+  const [updateScope, setUpdateScope] = useState<'section' | 'all'>('all');
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [inspectorView, setInspectorView] = useState<'segments' | 'audio' | 'export'>('segments');
   const [audioSettings, setAudioSettings] = useState<AudioProcessingOptions>({
@@ -110,6 +122,85 @@ function FinalVideoEditorComponent({
 
   // Audio visualization
   const { waveformData, isLoading: isAudioLoading } = useAudioVisualization(audioFile);
+
+  // Beat snapping. A subdivision toggle applies suggested durations (every
+  // Nth beat) immediately to the staged segment state and beat-aligns the
+  // audio offset; toggling off restores the pre-snap baseline. Only the
+  // timeline updates live — rendering stays an explicit action, like manual
+  // duration edits.
+  const beatAnalysis = waveformData?.beats ?? null;
+  const [beatSubdivision, setBeatSubdivision] = useState<BeatSubdivision | 0>(0);
+  const preSnapRef = useRef<{ durations: Map<number, number>; offset: number } | null>(null);
+
+  // A different track means a different grid: drop the toggle and baseline
+  // (current durations stay — they may already be rendered into the video).
+  const resetBeatSnap = useCallback(() => {
+    setBeatSubdivision(0);
+    preSnapRef.current = null;
+  }, []);
+
+  const handleBeatSubdivisionChange = useCallback(
+    (next: BeatSubdivision | 0) => {
+      if (!beatAnalysis) return;
+
+      if (next === 0) {
+        const baseline = preSnapRef.current;
+        if (baseline) {
+          segments.forEach((segment) => {
+            const original = baseline.durations.get(segment.id);
+            if (original !== undefined) {
+              onDurationChange(segment.id, original);
+            }
+          });
+          setAudioSettings((prev) => ({ ...prev, offset: baseline.offset }));
+          // If a render happened while snapped, the restored offset no longer
+          // matches the rendered audio — raise the same update prompt an
+          // offset drag does.
+          if (baseline.offset !== prevAudioSettingsRef.current.offset) {
+            setUpdatePromptReason('audio');
+          }
+        }
+        preSnapRef.current = null;
+        setBeatSubdivision(0);
+        return;
+      }
+
+      // Snap from the baseline captured when snapping was first engaged, so
+      // switching 1 → 2 → 4 re-suggests from the user's own durations rather
+      // than compounding earlier snaps.
+      const baseline = preSnapRef.current ?? {
+        durations: new Map(segments.map((s) => [s.id, s.duration ?? 1.5])),
+        offset: audioSettings.offset,
+      };
+      preSnapRef.current = baseline;
+
+      const baseDurations = segments.map(
+        (s) => baseline.durations.get(s.id) ?? s.duration ?? 1.5
+      );
+      const snapped = snapDurationsToBeatGrid(baseDurations, beatAnalysis.bpm, next);
+      segments.forEach((segment, index) => {
+        onDurationChange(segment.id, snapped[index]);
+      });
+      setAudioSettings((prev) => ({
+        ...prev,
+        offset: alignOffsetToBeatGrid(baseline.offset, beatAnalysis),
+      }));
+      setBeatSubdivision(next);
+    },
+    [audioSettings.offset, beatAnalysis, onDurationChange, segments]
+  );
+
+  // A manual duration edit diverges from the applied suggestion, so the
+  // toggle switches off (the edit stands; only the "on the grid" claim ends).
+  const handleManualDurationChange = useCallback(
+    (id: number, duration: number, applyAll?: boolean) => {
+      if (beatSubdivision !== 0) {
+        resetBeatSnap();
+      }
+      onDurationChange(id, duration, applyAll);
+    },
+    [beatSubdivision, onDurationChange, resetBeatSnap]
+  );
 
   const flushPendingBezier = useCallback(
     (
@@ -184,9 +275,9 @@ function FinalVideoEditorComponent({
     (nextValue: [number, number, number, number]) => {
       if (!selectedSegment) return;
       setLocalCurve(nextValue);
-      scheduleBezierChange(selectedSegment.id, nextValue, applyAll);
+      scheduleBezierChange(selectedSegment.id, nextValue, false);
     },
-    [applyAll, scheduleBezierChange, selectedSegment]
+    [scheduleBezierChange, selectedSegment]
   );
 
   const handleBezierCommit = useCallback(
@@ -196,10 +287,10 @@ function FinalVideoEditorComponent({
       flushPendingBezier({
         segmentId: selectedSegment.id,
         bezier: finalValue,
-        applyAll,
+        applyAll: false,
       });
     },
-    [applyAll, flushPendingBezier, selectedSegment]
+    [flushPendingBezier, selectedSegment]
   );
 
   const handleSegmentSelect = useCallback(
@@ -212,37 +303,55 @@ function FinalVideoEditorComponent({
 
   // Video playback control
   const { videoRef, state, togglePlayPause, seek } = useVideoPlayback((currentTime) => {
-    // Auto-select segment based on playback position
+    // Auto-select segment based on playback position. Deliberately not
+    // handleSegmentSelect: playback must not switch the inspector tab away
+    // from Audio/Export at every segment boundary.
     const currentSegment = getCurrentSegment(currentTime, segments);
     if (currentSegment && currentSegment.id !== selectedSegmentId) {
-      handleSegmentSelect(currentSegment.id);
+      onSelectSegment(currentSegment.id);
     }
   });
 
   const handleAudioSelect = useCallback((file: File) => {
     setAudioFile(file);
+    resetBeatSnap();
     audioFileChangedRef.current = true;
     setUpdatePromptReason('audio');
-  }, []);
+  }, [resetBeatSnap]);
 
   const handleRemoveAudio = useCallback(() => {
     setAudioFile(null);
+    resetBeatSnap();
     if (inspectorView === 'audio') {
       setInspectorView('segments');
     }
-  }, [inspectorView]);
+  }, [inspectorView, resetBeatSnap]);
 
   const handleAudioTrackSelect = useCallback(() => {
     if (!waveformData) return;
     setInspectorView('audio');
   }, [waveformData]);
 
-  const handleAudioOffsetChange = useCallback((newOffset: number) => {
-    setAudioSettings((prev) => ({
-      ...prev,
-      offset: newOffset,
-    }));
-  }, []);
+  const handleAudioOffsetChange = useCallback(
+    (newOffset: number) => {
+      // While snapping is active a free drag would silently pull the beats
+      // off the section boundaries; make the drag magnetic instead — commit
+      // to the nearest beat so the grid claim stays true. The baseline moves
+      // with it: toggle-off then reverts durations but keeps the new position.
+      const committed =
+        beatSubdivision !== 0 && beatAnalysis
+          ? quantizeOffsetToNearestBeat(newOffset, beatAnalysis)
+          : newOffset;
+      if (preSnapRef.current && beatSubdivision !== 0) {
+        preSnapRef.current = { ...preSnapRef.current, offset: committed };
+      }
+      setAudioSettings((prev) => ({
+        ...prev,
+        offset: committed,
+      }));
+    },
+    [beatAnalysis, beatSubdivision]
+  );
 
   const handleAudioOffsetCommit = useCallback(() => {
     setUpdatePromptReason('audio');
@@ -260,13 +369,22 @@ function FinalVideoEditorComponent({
     (event: ChangeEvent<HTMLSelectElement>) => {
       const nextValue = Number(event.target.value);
       if (nextValue === loopCount) return;
+      // Loop sync clones/removes segments under ids the pre-snap baseline
+      // doesn't cover, so a later toggle-off could only half-restore. Drop
+      // the toggle and baseline; the (uniformly snapped) durations stand.
+      if (beatSubdivision !== 0) {
+        resetBeatSnap();
+      }
       onLoopCountChange(nextValue);
       setUpdatePromptReason('loop');
     },
-    [loopCount, onLoopCountChange]
+    [beatSubdivision, loopCount, onLoopCountChange, resetBeatSnap]
   );
 
-  const handleVideoUpdate = (qualityOverride?: RenderQuality) => {
+  const handleVideoUpdate = (
+    qualityOverride?: RenderQuality,
+    segmentsOverride?: TransitionVideo[]
+  ) => {
     // Determine update hint based on what changed
     let updateHint: UpdateReason | undefined;
 
@@ -309,8 +427,28 @@ function FinalVideoEditorComponent({
       audioSettings,
       quality: effectiveQuality,
       updateHint,
+      segments: segmentsOverride,
     });
     setUpdatePromptReason(null);
+  };
+
+  const handleUpdateSection = () => {
+    setUpdateScope('section');
+    handleVideoUpdate();
+  };
+
+  const handleUpdateAllSections = () => {
+    if (!selectedSegment) return;
+    setUpdateScope('all');
+    // Cloning one section's settings onto all of them overwrites any
+    // per-section beat-snapped durations — the snap claim no longer holds.
+    if (beatSubdivision !== 0) {
+      resetBeatSnap();
+    }
+    // Clone returns the post-clone list so the re-render below doesn't read
+    // the parent's still-stale segment state.
+    const nextSegments = onCloneSegmentSettings(selectedSegment.id);
+    handleVideoUpdate(undefined, nextSegments);
   };
 
   const handleDownload = useCallback(() => {
@@ -359,23 +497,22 @@ function FinalVideoEditorComponent({
         };
 
   // Render Components
-  const isPreviewRender = currentRenderQuality === 'preview';
-  const downloadButtonLabel = pendingFullQualityDownload
-    ? 'Rendering Full Quality...'
-    : isPreviewRender
-    ? 'Download (Render Full Quality)'
-    : 'Download (full quality)';
+  const downloadButtonLabel = pendingFullQualityDownload ? 'Rendering…' : 'Download';
 
   const ExportButtons = (
     <div className="flex gap-2">
       <Button onClick={onExit} variant="outline" className="flex-1" disabled={isUpdating}>
         Exit
       </Button>
-      <Button onClick={handleDownload} className="flex-1 gap-2" disabled={isUpdating}>
+      <Button
+        onClick={handleDownload}
+        className="flex-1 gap-2 bg-white text-neutral-950 hover:bg-white/90"
+        disabled={isUpdating}
+      >
         {isUpdating && pendingFullQualityDownload ? (
           <Loader2 className="h-4 w-4 animate-spin" />
         ) : (
-          <Play className="h-4 w-4" />
+          <Download className="h-4 w-4" />
         )}
         {downloadButtonLabel}
       </Button>
@@ -383,10 +520,10 @@ function FinalVideoEditorComponent({
   );
 
   const AudioSettingsContent = (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div>
-        <h4 className="text-2xl font-bold text-foreground">Audio Settings</h4>
-        <p className="text-xs text-muted-foreground">
+        <h4 className="text-xl lg:text-2xl font-bold text-foreground">Audio Settings</h4>
+        <p className="hidden sm:block text-xs text-muted-foreground">
           Shape fade envelopes and looping for the background track.
         </p>
       </div>
@@ -394,15 +531,14 @@ function FinalVideoEditorComponent({
       <div className="space-y-2">
         <Label htmlFor="audio-fade-in">Fade in (sec)</Label>
         <div className="flex items-center gap-3">
-          <input
+          <RangeSlider
             id="audio-fade-in"
-            type="range"
             min={0}
             max={10}
             step={0.1}
             value={audioSettings.fadeIn}
             onChange={(event) => updateAudioSetting('fadeIn', Number(event.target.value))}
-            className="h-2 flex-1 cursor-pointer rounded-full bg-primary/30"
+            className="flex-1"
           />
           <input
             type="number"
@@ -419,15 +555,14 @@ function FinalVideoEditorComponent({
       <div className="space-y-2">
         <Label htmlFor="audio-fade-out">Fade out (sec)</Label>
         <div className="flex items-center gap-3">
-          <input
+          <RangeSlider
             id="audio-fade-out"
-            type="range"
             min={0}
             max={10}
             step={0.1}
             value={audioSettings.fadeOut}
             onChange={(event) => updateAudioSetting('fadeOut', Number(event.target.value))}
-            className="h-2 flex-1 cursor-pointer rounded-full bg-primary/30"
+            className="flex-1"
           />
           <input
             type="number"
@@ -471,30 +606,31 @@ function FinalVideoEditorComponent({
     <>
       <div>
         <div className="flex items-center gap-3">
-          <h4 className="text-2xl font-bold text-foreground">{selectedSegment.name}</h4>
+          <h4 className="text-xl lg:text-2xl font-bold text-foreground">{selectedSegment.name}</h4>
           {selectedSegment.loopIteration && selectedSegment.loopIteration > 1 && (
             <span className="rounded-full border border-border/70 bg-background px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Loop {selectedSegment.loopIteration}
             </span>
           )}
         </div>
-        <p className="text-xs text-muted-foreground">Fine-tune duration and easing curve.</p>
+        <p className="hidden sm:block text-xs text-muted-foreground">Fine-tune duration and easing curve.</p>
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="segment-duration">Duration (sec)</Label>
         <div className="flex items-center gap-3">
-          <input
+          <RangeSlider
             id="segment-duration"
-            type="range"
-            min={0.5}
-            max={6}
+            // Snapped values can leave 0.5–6; widen so the DOM never clamps
+            // (a pinned thumb would misreport and re-clamp on first keypress).
+            min={Math.min(0.5, selectedSegment.duration ?? 1.5)}
+            max={Math.max(6, selectedSegment.duration ?? 1.5)}
             step={0.01}
             value={selectedSegment.duration ?? 1.5}
             onChange={(event) =>
-              onDurationChange(selectedSegment.id, Number(event.target.value), applyAll)
+              handleManualDurationChange(selectedSegment.id, Number(event.target.value))
             }
-            className="h-2 flex-1 cursor-pointer rounded-full bg-primary/30"
+            className="flex-1"
           />
           <input
             type="number"
@@ -502,56 +638,61 @@ function FinalVideoEditorComponent({
             step={0.01}
             value={(selectedSegment.duration ?? 1.5).toFixed(2)}
             onChange={(event) =>
-              onDurationChange(selectedSegment.id, Number(event.target.value), applyAll)
+              handleManualDurationChange(selectedSegment.id, Number(event.target.value))
             }
             className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
           />
         </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
         <div className="flex items-center justify-between gap-2">
           <Label>Ease Curve</Label>
-          <select
+          <EasingCurvePicker
             id="preset-select"
-            value={selectedSegment.easingPreset ?? ''}
-            onChange={(event) => onPresetChange(selectedSegment.id, event.target.value, applyAll)}
-            className="rounded-md border border-border bg-background py-2 pl-3 pr-8 text-sm"
-          >
-            {easingOptions.map((preset) => (
-              <option key={preset} value={preset}>
-                {preset}
-              </option>
-            ))}
-          </select>
+            value={selectedSegment.easingPreset ?? easingOptions[0]}
+            options={easingOptions}
+            onChange={(preset) => onPresetChange(selectedSegment.id, preset)}
+            disabled={isUpdating}
+          />
         </div>
+        {/* max-h = plot-square cap (sidebar inner width) + readout row, so the
+            plot never stretches past square and spare space falls below. */}
         <CubicBezierEditor
           value={curveValue}
           onChange={handleBezierChange}
           onCommit={handleBezierCommit}
+          className="lg:min-h-0 lg:flex-1 lg:max-h-[338px] xl:max-h-[378px]"
         />
-        <p className="text-xs text-muted-foreground">
-          Drag the control points to sculpt a bespoke ease-in/ease-out profile for this segment.
-        </p>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleUpdateSection}
+            disabled={isUpdating}
+            className="flex-1 gap-2"
+          >
+            {isUpdating && updateScope === 'section' && (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            )}
+            Update Section
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleUpdateAllSections}
+            disabled={isUpdating}
+            className="flex-1 gap-2"
+          >
+            {isUpdating && updateScope === 'all' && (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            )}
+            Update All Sections
+          </Button>
+        </div>
       </div>
 
-      <div className="space-y-2 pt-2">
-        <label className="flex items-center gap-2 text-sm text-foreground/90">
-          <input
-            type="checkbox"
-            checked={applyAll}
-            onChange={(event) => {
-              const nextValue = event.target.checked;
-              setApplyAll(nextValue);
-              if (nextValue && selectedSegment) {
-                onCloneSegmentSettings(selectedSegment.id);
-              }
-            }}
-            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-          />
-          Apply settings to all videos
-        </label>
-        <label className="flex items-center gap-2 text-sm text-muted-foreground mt-4">
+      <div className="pt-2">
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
           <input
             type="checkbox"
             checked={renderQuality === 'preview'}
@@ -560,15 +701,6 @@ function FinalVideoEditorComponent({
           />
           Render previews in lower quality (faster)
         </label>
-        <Button
-          size="sm"
-          onClick={() => handleVideoUpdate()}
-          disabled={isUpdating}
-          className="gap-2 w-full mt-2"
-        >
-          {isUpdating && <Loader2 className="h-4 w-4 animate-spin" />}
-          {isUpdating ? 'Updating…' : 'Update Video'}
-        </Button>
       </div>
     </>
   ) : (
@@ -579,9 +711,13 @@ function FinalVideoEditorComponent({
 
   return (
     <>
-      <div className="w-full h-full flex flex-col lg:flex-row gap-2 lg:gap-6 max-w-[1800px] mx-auto">
-        <div className="flex-1 flex flex-col gap-3 lg:gap-6 min-w-0">
-          <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black shadow-xl">
+      {/* On lg the editor fills the viewport (minus the 8px page frame); the
+          video preview flexes to absorb the height and letterboxes itself. */}
+      <div className="w-full flex flex-col lg:flex-row gap-2 max-w-[1800px] mx-auto lg:h-[calc(100vh-1rem)]">
+        <div className="flex-1 flex flex-col gap-3 lg:gap-6 min-w-0 lg:min-h-0">
+          {/* Preview, controls bar and timeline as one connected card */}
+          <div className="flex w-full flex-col shadow-xl lg:h-full lg:min-h-0">
+          <div className="relative aspect-video w-full overflow-hidden rounded-t-xl border border-border bg-black lg:aspect-auto lg:flex-1 lg:min-h-0">
             <video
               key={finalVideo.url}
               ref={videoRef}
@@ -593,15 +729,14 @@ function FinalVideoEditorComponent({
             />
           </div>
 
-          {/* Playback Controls */}
-          <div className="px-1 lg:px-2">
+          {/* Controls bar bridging the preview and the timeline */}
+          <div className="border-x border-border bg-secondary px-3 py-2">
             <VideoPlaybackControls
               isPlaying={state.isPlaying}
               currentTime={state.currentTime}
               duration={state.duration}
               onPlayPause={togglePlayPause}
               videoSize={finalVideo.size}
-              createdAt={finalVideo.createdAt}
               actions={
                 <div className="flex flex-wrap items-center gap-2 md:gap-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <label className="flex items-center gap-1.5 md:gap-2">
@@ -632,7 +767,6 @@ function FinalVideoEditorComponent({
           </div>
 
           {/* Timeline */}
-          <div className="px-1 lg:px-2">
             <VideoTimeline
               segments={segments}
               currentTime={state.currentTime}
@@ -641,6 +775,7 @@ function FinalVideoEditorComponent({
               onSegmentSelect={handleSegmentSelect}
               zoomValue={timelineZoom}
               onZoomChange={setTimelineZoom}
+              viewportClassName="rounded-t-none rounded-b-xl"
               renderAudioTrack={({ trackWidth, pixelsPerSecond, totalDuration }) => (
                 <div className="space-y-1">
                   {!waveformData ? (
@@ -660,6 +795,10 @@ function FinalVideoEditorComponent({
                       offset={audioSettings.offset}
                       onOffsetChange={handleAudioOffsetChange}
                       onOffsetCommit={handleAudioOffsetCommit}
+                      beatSubdivision={beatSubdivision}
+                      onBeatSubdivisionChange={handleBeatSubdivisionChange}
+                      onBeatApply={() => handleVideoUpdate()}
+                      isBeatUpdating={isUpdating}
                     />
                   )}
                 </div>
@@ -668,39 +807,43 @@ function FinalVideoEditorComponent({
           </div>
         </div>
 
-        <aside className="flex flex-col w-full lg:w-[400px] xl:w-[450px] shrink-0 rounded-xl border border-border bg-secondary/30 p-6 h-auto lg:h-full lg:sticky lg:top-6">
+        {/* The wrapper cell contributes no height on lg (the aside is an
+            absolute overlay), so the row's height — and therefore the
+            sidebar's — is set by the preview/timeline column. */}
+        <div className="w-full lg:w-[360px] xl:w-[400px] shrink-0 lg:relative">
+        <aside className="flex flex-col rounded-xl border border-border bg-secondary p-4 lg:p-6 lg:absolute lg:inset-0">
           <Tabs
             value={inspectorView}
             onValueChange={(v) => setInspectorView(v as 'segments' | 'audio' | 'export')}
             className="flex flex-col h-full w-full"
           >
-              <TabsList className="grid w-full grid-cols-3 lg:hidden mb-4 bg-secondary/50 p-1 rounded-xl">
+              <TabsList className="grid w-full grid-cols-3 mb-3 bg-secondary/50 p-1 rounded-xl">
                 <TabsTrigger 
                   value="segments" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-[color,background-color,box-shadow] duration-200"
                 >
                   Clip
                 </TabsTrigger>
                 <TabsTrigger 
                   value="audio" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-[color,background-color,box-shadow] duration-200"
                 >
                   Audio
                 </TabsTrigger>
                 <TabsTrigger 
                   value="export" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all duration-200"
+                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-[color,background-color,box-shadow] duration-200"
                 >
                   Export
                 </TabsTrigger>
               </TabsList>
 
             <div className="flex-1 overflow-y-auto min-h-[400px] lg:min-h-0">
-              <TabsContent value="segments" className="mt-0 h-full space-y-4 data-[state=inactive]:hidden">
+              <TabsContent value="segments" className="mt-0 h-full space-y-3 sm:space-y-4 lg:flex lg:flex-col data-[state=inactive]:hidden">
                 {SegmentSettingsContent}
               </TabsContent>
 
-              <TabsContent value="audio" className="mt-0 h-full space-y-4 data-[state=inactive]:hidden">
+              <TabsContent value="audio" className="mt-0 h-full space-y-3 sm:space-y-4 data-[state=inactive]:hidden">
                 {waveformData ? (
                   AudioSettingsContent
                 ) : (
@@ -710,7 +853,7 @@ function FinalVideoEditorComponent({
                 )}
               </TabsContent>
 
-              <TabsContent value="export" className="mt-0 h-full flex items-center justify-center lg:hidden data-[state=inactive]:hidden">
+              <TabsContent value="export" className="mt-0 h-full flex items-center justify-center data-[state=inactive]:hidden">
                 <div className="w-full space-y-4">
                   <p className="text-center text-sm text-muted-foreground mb-4">Ready to save your loop?</p>
                   {ExportButtons}
@@ -718,12 +861,8 @@ function FinalVideoEditorComponent({
               </TabsContent>
             </div>
           </Tabs>
-
-          {/* Desktop Footer (Always visible on desktop) */}
-          <div className="hidden lg:block border-t border-border/60 pt-4 mt-4">
-            {ExportButtons}
-          </div>
         </aside>
+        </div>
       </div>
 
       <Dialog open={showUpdatePrompt} onOpenChange={handlePromptOpenChange}>

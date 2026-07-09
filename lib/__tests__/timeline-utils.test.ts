@@ -13,6 +13,7 @@ import type { TransitionVideo } from '@/lib/types';
 // transitively via other hooks, but nothing WebCodecs-related executes at
 // module load time, and the hook body itself never runs in these tests.
 import { computeConfigHash } from '@/hooks/useFinalizeVideo';
+import { DEFAULT_EASING } from '@/lib/speed-curve-config';
 
 /** Build a minimal valid TransitionVideo, overridable per test. */
 function makeVideo(overrides: Partial<TransitionVideo> = {}): TransitionVideo {
@@ -358,7 +359,7 @@ describe('computeConfigHash', () => {
       makeVideo({
         id: 1,
         duration: 1.5, // DEFAULT_OUTPUT_DURATION
-        easingPreset: 'easeInOutSine', // DEFAULT_EASING
+        easingPreset: DEFAULT_EASING,
         useCustomEasing: false,
       }),
     ];

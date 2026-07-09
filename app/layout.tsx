@@ -60,31 +60,10 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${interVariable.variable} ${dmMono.variable} antialiased`}
       >
+        {/* The site footer lives in app/page.tsx (landing view only), so the
+            editors can use the full viewport height. */}
         <div className="min-h-screen flex flex-col">
-          <main className="flex-1">{children}</main>
-          <footer
-            className="border-t border-border/50 px-6 py-4 text-[11px] text-muted-foreground tracking-wide"
-            style={{ fontFamily: "var(--font-dm-mono)" }}
-          >
-            By Willie —{" "}
-            <a
-              href="https://github.com/shrimbly/easy-peasy-ease"
-              className="underline hover:text-foreground transition-colors"
-              target="_blank"
-              rel="noreferrer"
-            >
-              code
-            </a>{" "}
-            —{" "}
-            <a
-              href="https://x.com/ReflctWillie"
-              className="underline hover:text-foreground transition-colors"
-              target="_blank"
-              rel="noreferrer"
-            >
-              x
-            </a>
-          </footer>
+          <main className="flex-1 flex flex-col">{children}</main>
         </div>
         <Analytics />
       </body>

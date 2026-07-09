@@ -2,11 +2,14 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { cn } from '@/lib/utils';
+
 interface CubicBezierEditorProps {
   value: [number, number, number, number];
   onChange: (value: [number, number, number, number]) => void;
   onCommit?: (value: [number, number, number, number]) => void;
   disabled?: boolean;
+  className?: string;
 }
 
 export const CubicBezierEditor = memo(CubicBezierEditorComponent);
@@ -153,6 +156,7 @@ function CubicBezierEditorComponent({
   onChange,
   onCommit,
   disabled = false,
+  className,
 }: CubicBezierEditorProps) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const valueRef = useRef(value);
@@ -381,9 +385,17 @@ function CubicBezierEditorComponent({
   );
 
   return (
-    <div className="space-y-3">
-      <div className="relative w-full rounded-lg border border-border bg-muted/50 p-4">
-        <div ref={editorRef} className="relative mx-auto aspect-square w-full max-w-md">
+    <div className={cn('space-y-3 lg:flex lg:min-h-0 lg:flex-col', className)}>
+      {/* On lg the frame flexes so the plot absorbs whatever height keeps the
+          sidebar level with the preview/timeline column (min-h keeps it
+          usable on short viewports). */}
+      {/* Height caps live on the caller-supplied root className so leftover
+          flex space pools after the whole editor, not inside it. */}
+      <div className="relative w-full rounded-lg border border-border bg-muted/50 p-3 sm:p-4 lg:flex lg:min-h-48 lg:flex-1 lg:justify-center">
+        {/* Wider-than-tall on phones to save vertical space; the SVG uses
+            preserveAspectRatio="none" and the drag math normalises by the
+            rect's own width/height, so a non-square plot stays correct. */}
+        <div ref={editorRef} className="relative mx-auto aspect-[16/9] w-full max-w-md sm:aspect-square lg:mx-0 lg:w-auto lg:max-w-full">
           <svg
             viewBox="0 0 100 100"
             preserveAspectRatio="none"
@@ -429,7 +441,7 @@ function CubicBezierEditorComponent({
           <button
             type="button"
             aria-label="Adjust control point 1"
-            className={`absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-background/80 bg-primary/80 shadow transition active:cursor-grabbing active:scale-95 disabled:cursor-not-allowed disabled:pointer-events-none touch-none ${
+            className={`absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-background/80 bg-primary/80 shadow transition active:cursor-grabbing active:scale-[0.96] disabled:cursor-not-allowed disabled:pointer-events-none touch-none ${
               draggingHandle === 'p1' ? 'ring-2 ring-primary/80' : ''
             }`}
             style={controlStyles.p1}
@@ -439,7 +451,7 @@ function CubicBezierEditorComponent({
           <button
             type="button"
             aria-label="Adjust control point 2"
-            className={`absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-background/80 bg-primary/80 shadow transition active:cursor-grabbing active:scale-95 disabled:cursor-not-allowed disabled:pointer-events-none touch-none ${
+            className={`absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-background/80 bg-primary/80 shadow transition active:cursor-grabbing active:scale-[0.96] disabled:cursor-not-allowed disabled:pointer-events-none touch-none ${
               draggingHandle === 'p2' ? 'ring-2 ring-primary/80' : ''
             }`}
             style={controlStyles.p2}
@@ -448,17 +460,15 @@ function CubicBezierEditorComponent({
           />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground">
-        <div className="space-y-0.5">
-          <p className="font-medium text-foreground">Control Point 1</p>
-          <p>x: {value[0].toFixed(2)}</p>
-          <p>y: {value[1].toFixed(2)}</p>
-        </div>
-        <div className="space-y-0.5">
-          <p className="font-medium text-foreground">Control Point 2</p>
-          <p>x: {value[2].toFixed(2)}</p>
-          <p>y: {value[3].toFixed(2)}</p>
-        </div>
+      <div className="hidden sm:grid grid-cols-2 gap-3 text-xs text-muted-foreground tabular-nums">
+        <p>
+          <span className="font-medium text-foreground">Point 1</span>{' '}
+          {value[0].toFixed(2)}, {value[1].toFixed(2)}
+        </p>
+        <p>
+          <span className="font-medium text-foreground">Point 2</span>{' '}
+          {value[2].toFixed(2)}, {value[3].toFixed(2)}
+        </p>
       </div>
     </div>
   );

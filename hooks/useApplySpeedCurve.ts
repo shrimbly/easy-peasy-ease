@@ -13,7 +13,7 @@ import {
 } from 'mediabunny';
 import type { Rotation, VideoSample } from 'mediabunny';
 import { buildEasedSourceTimestamps } from '@/lib/speed-curve';
-import { getEasingFunction, type EasingFunction } from '@/lib/easing-functions';
+import { resolveEasing, type EasingFunction } from '@/lib/easing-functions';
 import type { RenderQuality } from '@/lib/types';
 import {
   TARGET_FRAME_RATE,
@@ -183,8 +183,7 @@ export const useApplySpeedCurve = (): UseApplySpeedCurveReturn => {
         // regions that hold the first frame of a section for ~0.25s at 60fps,
         // which reads as dropped/frozen frames at every section boundary. The
         // user's chosen curve is respected instead.
-        const easingFunc: EasingFunction =
-          typeof easingOption === 'string' ? getEasingFunction(easingOption) : easingOption;
+        const easingFunc: EasingFunction = resolveEasing(easingOption);
 
         updateProgress(
           'processing',

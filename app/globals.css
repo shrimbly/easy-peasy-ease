@@ -142,6 +142,122 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* Native range sliders — themed to the palette instead of browser blue.
+     The filled (left-of-thumb) portion is bright, the rest dim; the split
+     point comes from --slider-fill, set per-instance by <RangeSlider>. */
+  input[type='range'] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 0.5rem;
+    cursor: pointer;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      var(--primary) var(--slider-fill, 0%),
+      color-mix(in srgb, var(--primary) 25%, transparent) var(--slider-fill, 0%)
+    );
+  }
+  input[type='range']:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 1rem;
+    width: 1rem;
+    border-radius: 9999px;
+    border: 2px solid var(--background);
+    background-color: var(--primary);
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.4);
+    transition: scale 150ms ease-out;
+  }
+  input[type='range']::-moz-range-thumb {
+    height: 1rem;
+    width: 1rem;
+    border-radius: 9999px;
+    border: 2px solid var(--background);
+    background-color: var(--primary);
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.4);
+    transition: scale 150ms ease-out;
+  }
+  input[type='range']::-moz-range-track {
+    background: transparent;
+  }
+  input[type='range']:active::-webkit-slider-thumb {
+    scale: 1.15;
+  }
+  input[type='range']:active::-moz-range-thumb {
+    scale: 1.15;
+  }
+  input[type='range']:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Native checkboxes — themed check drawn with a clip-path so it uses
+     the palette vars directly (no hardcoded data-URI colors). */
+  input[type='checkbox'] {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    height: 1rem;
+    width: 1rem;
+    flex-shrink: 0;
+    cursor: pointer;
+    border-radius: 0.25rem;
+    border: 1px solid var(--border);
+    background-color: transparent;
+    transition: background-color 150ms ease-out, border-color 150ms ease-out;
+  }
+  input[type='checkbox']::before {
+    content: '';
+    height: 0.625rem;
+    width: 0.625rem;
+    scale: 0;
+    transition: scale 120ms ease-out;
+    background-color: var(--primary-foreground);
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  }
+  input[type='checkbox']:checked {
+    border-color: var(--primary);
+    background-color: var(--primary);
+  }
+  input[type='checkbox']:checked::before {
+    scale: 1;
+  }
+  input[type='checkbox']:hover:not(:disabled):not(:checked) {
+    border-color: var(--muted-foreground);
+  }
+  input[type='checkbox']:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  input[type='checkbox']:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+/* Tempo dot in the beat-snap pill: sharp hit on the beat, eased decay. */
+@keyframes beat-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  40% {
+    opacity: 0.4;
+    transform: scale(0.7);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beat-pulse-dot {
+    animation: none !important;
+  }
 }
 
 .timeline-scrollbar {

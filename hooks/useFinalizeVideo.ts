@@ -13,7 +13,7 @@ import {
   RenderQuality,
 } from '@/lib/types';
 import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from '@/lib/speed-curve-config';
-import { createBezierEasing, type EasingFunction } from '@/lib/easing-functions';
+import { createBezierEasing, resolveEasing, type EasingFunction } from '@/lib/easing-functions';
 import { isAbortError } from '@/lib/abort-utils';
 
 interface FinalizeProgress {
@@ -296,12 +296,14 @@ export const useFinalizeVideo = (): UseFinalizeVideoReturn => {
           const videoNumber = i + 1;
           const segmentMetadata = transitionMap.get(video.id) ?? video;
           const targetDuration = segmentMetadata.duration ?? DEFAULT_OUTPUT_DURATION;
-          let easingFunction: EasingFunction | string = DEFAULT_EASING;
+          let easingFunction: EasingFunction;
 
           if (segmentMetadata.useCustomEasing && segmentMetadata.customBezier) {
             easingFunction = createBezierEasing(...segmentMetadata.customBezier);
-          } else if (segmentMetadata.easingPreset) {
-            easingFunction = segmentMetadata.easingPreset;
+          } else {
+            // Presets are cubic-beziers; resolveEasing turns the name into a
+            // bezier evaluator (legacy math-function names still work too).
+            easingFunction = resolveEasing(segmentMetadata.easingPreset ?? DEFAULT_EASING);
           }
 
           // Resolve a readable source blob: prefer the original File (backed

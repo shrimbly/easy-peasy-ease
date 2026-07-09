@@ -43,6 +43,10 @@ type AudioFinalizeOptions = {
   audioBlob?: Blob;
   audioSettings?: AudioProcessingOptions;
   updateHint?: UpdateReason;
+  /** Re-render with these segments instead of current state — used when the
+   *  caller has just mutated segment state (e.g. clone-to-all) and can't wait
+   *  for the async state update to land. */
+  segments?: TransitionVideo[];
 };
 
 type VideoMetadata = {
@@ -641,30 +645,32 @@ export default function Home() {
     }
   }, [finalVideo, transitionVideos, selectedSegmentId]);
 
-  const handleCloneSegmentSettings = (id: number) => {
+  const handleCloneSegmentSettings = (id: number): TransitionVideo[] | undefined => {
     const sourceSegment = transitionVideos.find((segment) => segment.id === id);
     if (!sourceSegment) {
-      return;
+      return undefined;
     }
 
     const sourceCurve =
       sourceSegment.customBezier ??
       getPresetBezier(sourceSegment.easingPreset ?? DEFAULT_EASING);
 
-    setTransitionVideos((prev) =>
-      prev.map((segment) => {
-        if (segment.id === id) {
-          return segment;
-        }
-        return {
-          ...segment,
-          duration: sourceSegment.duration,
-          easingPreset: sourceSegment.easingPreset,
-          useCustomEasing: sourceSegment.useCustomEasing,
-          customBezier: [...sourceCurve] as [number, number, number, number],
-        };
-      })
-    );
+    const next = transitionVideos.map((segment) => {
+      if (segment.id === id) {
+        return segment;
+      }
+      return {
+        ...segment,
+        duration: sourceSegment.duration,
+        easingPreset: sourceSegment.easingPreset,
+        useCustomEasing: sourceSegment.useCustomEasing,
+        customBezier: [...sourceCurve] as [number, number, number, number],
+      };
+    });
+    setTransitionVideos(next);
+    // Returned so a same-tick re-render can use the cloned settings without
+    // waiting for the state update to flush.
+    return next;
   };
 
   const handleReapplyFinalVideo = async (options?: AudioFinalizeOptions & { quality?: RenderQuality }) => {
@@ -701,7 +707,7 @@ export default function Home() {
       prevAudioSettingsRef.current = options.audioSettings;
     }
 
-    await handleFinalizeVideo(undefined, options, true, options?.quality, reason);
+    await handleFinalizeVideo(options?.segments, options, true, options?.quality, reason);
   };
 
   const runPreflightChecks = (segments: TransitionVideo[]): PreflightWarning[] => {
@@ -1101,12 +1107,12 @@ export default function Home() {
             </p>
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <span>Processing...</span>
-              <span>{Math.round(finalizationProgress)}%</span>
+              <span className="tabular-nums">{Math.round(finalizationProgress)}%</span>
             </div>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
             <div
-              className="h-full bg-primary transition-all duration-300"
+              className="h-full bg-primary transition-[width] duration-300"
               style={{ width: `${finalizationProgress}%` }}
             />
           </div>
@@ -1121,7 +1127,15 @@ export default function Home() {
   );
 
   return (
-    <div className="relative flex min-h-[calc(100vh-80px)] items-center justify-center bg-background overflow-hidden pb-20 sm:pb-24">
+    <div className="flex flex-1 flex-col">
+    <div
+      className={cn(
+        'relative flex flex-1 items-center justify-center bg-background overflow-hidden',
+        // The big bottom pad balances the centred landing hero; in the
+        // editors it would just push the footer away from the controls.
+        !(finalVideo || splitSource) && 'pb-20 sm:pb-24'
+      )}
+    >
       <LightRays
         className="absolute inset-0 z-0"
         color={isDropZoneHovered ? "rgba(160, 210, 255, 0.17)" : "rgba(160, 210, 255, 0.15)"}
@@ -1132,11 +1146,13 @@ export default function Home() {
       <main
         className={cn(
           'relative z-10 flex w-full flex-col items-center justify-center gap-12 px-4 py-12',
-          finalVideo || splitSource ? 'max-w-none items-stretch justify-start px-4 py-8 lg:px-8 lg:py-10' : 'max-w-2xl'
+          finalVideo || splitSource
+            ? 'max-w-none items-stretch justify-start self-stretch p-2'
+            : 'max-w-2xl'
         )}
       >
         {finalVideo ? (
-          <section className="w-full min-h-[calc(100vh-5rem)] space-y-8">
+          <section className="w-full space-y-8">
             {finalizeWarnings.length > 0 && (
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
                 {finalizeWarnings.map((warning) => (
@@ -1187,7 +1203,7 @@ export default function Home() {
             {finalizingDialog}
           </section>
         ) : splitSource ? (
-          <section className="w-full min-h-[calc(100vh-5rem)] space-y-8">
+          <section className="w-full space-y-8">
             <VideoSplitEditor
               file={splitSource.file}
               url={splitSource.url}
@@ -1224,7 +1240,7 @@ export default function Home() {
                 />
                 {uploadedVideos.length === 0 && (
                   <div className="flex flex-col items-center gap-2 px-4">
-                    <p className="max-w-lg text-base sm:text-lg text-muted-foreground">
+                    <p className="max-w-lg text-base sm:text-lg text-pretty text-muted-foreground">
                       Free tool to stitch and apply ease curves to short videos.
                     </p>
                     <p className="text-xs text-muted-foreground/50">v0.1.3</p>
@@ -1254,7 +1270,7 @@ export default function Home() {
                           setUploadError(null);
                         }}
                         className={cn(
-                          'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                          'inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors',
                           mode === 'stitch'
                             ? 'bg-primary text-primary-foreground shadow-sm'
                             : 'text-muted-foreground hover:text-foreground'
@@ -1271,7 +1287,7 @@ export default function Home() {
                           setUploadError(null);
                         }}
                         className={cn(
-                          'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                          'inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors',
                           mode === 'split'
                             ? 'bg-primary text-primary-foreground shadow-sm'
                             : 'text-muted-foreground hover:text-foreground'
@@ -1379,7 +1395,7 @@ export default function Home() {
               <BlurFade delay={0.2} className="w-full">
                 <div className="w-full space-y-6">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold">
+                    <h3 className="text-lg font-semibold text-balance">
                       Uploaded Videos ({uploadedVideos.length})
                     </h3>
                     <Button
@@ -1597,13 +1613,13 @@ export default function Home() {
                         <p className="text-sm font-semibold text-foreground">
                           {finalizationMessage}
                         </p>
-                        <span className="text-sm text-muted-foreground">
+                        <span className="text-sm tabular-nums text-muted-foreground">
                           {Math.round(finalizationProgress)}%
                         </span>
                       </div>
                       <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
                         <div
-                          className="bg-primary h-full transition-all duration-300"
+                          className="bg-primary h-full transition-[width] duration-300"
                           style={{ width: `${finalizationProgress}%` }}
                         />
                       </div>
@@ -1647,6 +1663,33 @@ export default function Home() {
         </Dialog>
       </main>
 
+    </div>
+    {/* Site credit — landing only, so the editors get the full viewport. */}
+    {!(finalVideo || splitSource) && (
+      <footer
+        className="border-t border-border/50 px-6 py-4 text-[11px] text-muted-foreground tracking-wide"
+        style={{ fontFamily: 'var(--font-dm-mono)' }}
+      >
+        By Willie —{' '}
+        <a
+          href="https://github.com/shrimbly/easy-peasy-ease"
+          className="underline hover:text-foreground transition-colors"
+          target="_blank"
+          rel="noreferrer"
+        >
+          code
+        </a>{' '}
+        —{' '}
+        <a
+          href="https://x.com/ReflctWillie"
+          className="underline hover:text-foreground transition-colors"
+          target="_blank"
+          rel="noreferrer"
+        >
+          x
+        </a>
+      </footer>
+    )}
     </div>
   );
 }

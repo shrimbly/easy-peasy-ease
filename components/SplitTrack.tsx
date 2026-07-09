@@ -159,7 +159,12 @@ export function SplitTrack({
       const idx = draggingIndexRef.current;
       if (idx === null) return;
       e.preventDefault();
-      onSplitTimesChange(moveSplit(splitTimes, idx, timeFromClientX(e.clientX), safeDuration));
+      const next = moveSplit(splitTimes, idx, timeFromClientX(e.clientX), safeDuration);
+      onSplitTimesChange(next);
+      // Scrub the preview to the split's actual (clamped) position so the user
+      // sees the exact frame they're cutting on as they drag.
+      const movedTo = next[idx];
+      if (typeof movedTo === 'number') onSeek(movedTo);
     };
     const stop = () => {
       draggingIndexRef.current = null;
@@ -173,13 +178,15 @@ export function SplitTrack({
       window.removeEventListener('pointerup', stop);
       window.removeEventListener('pointercancel', stop);
     };
-  }, [draggingIndex, splitTimes, safeDuration, timeFromClientX, onSplitTimesChange]);
+  }, [draggingIndex, splitTimes, safeDuration, timeFromClientX, onSplitTimesChange, onSeek]);
 
   const startMarkerDrag = (index: number) => (e: React.PointerEvent) => {
     if (disabled) return;
     e.stopPropagation();
     e.preventDefault();
     setSelectedSplit(index);
+    // Jump the preview to the grabbed split immediately, before any drag.
+    onSeek(splitTimes[index]);
     draggingIndexRef.current = index;
     setDraggingIndex(index);
   };
@@ -193,12 +200,13 @@ export function SplitTrack({
       return;
     }
     const step = e.shiftKey ? NUDGE_LARGE : NUDGE_SMALL;
-    if (e.key === 'ArrowLeft') {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
-      onSplitTimesChange(moveSplit(splitTimes, index, splitTimes[index] - step, safeDuration));
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      onSplitTimesChange(moveSplit(splitTimes, index, splitTimes[index] + step, safeDuration));
+      const target = splitTimes[index] + (e.key === 'ArrowLeft' ? -step : step);
+      const next = moveSplit(splitTimes, index, target, safeDuration);
+      onSplitTimesChange(next);
+      const movedTo = next[index];
+      if (typeof movedTo === 'number') onSeek(movedTo);
     }
   };
 
@@ -263,7 +271,7 @@ export function SplitTrack({
       {/* The track */}
       <div
         ref={trackRef}
-        className="relative h-24 w-full touch-none select-none overflow-hidden rounded-lg border border-border bg-secondary/40"
+        className="relative h-24 w-full touch-none select-none overflow-hidden rounded-lg border border-border bg-secondary"
         onPointerDown={handleTrackPointerDown}
         onPointerMove={handleTrackPointerMove}
         onPointerUp={handleTrackPointerUp}
@@ -359,6 +367,7 @@ export function SplitTrack({
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedSplit(index);
+                  onSeek(splitTimes[index]);
                 }}
                 onKeyDown={handleMarkerKeyDown(index)}
               >

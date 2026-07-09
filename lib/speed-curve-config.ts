@@ -29,4 +29,4 @@ export const PREVIEW_BITRATE = 4_000_000; // 4 Mbps for fast preview rendering
 // Speed curve parameters
 export const DEFAULT_INPUT_DURATION = 5; // Kling videos are 5 seconds
 export const DEFAULT_OUTPUT_DURATION = 1.5; // Target 1.5s with ease curve
-export const DEFAULT_EASING = 'easeInOutSine'; // Default easing function
+export const DEFAULT_EASING = 'In Out Quad'; // Default easing preset (closest easing.dev curve to the old easeInOutSine)
