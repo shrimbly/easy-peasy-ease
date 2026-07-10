@@ -13,6 +13,7 @@
  */
 
 import type { TransitionVideo, VideoEncodeCapability } from './types';
+import type { Rotation } from 'mediabunny';
 import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from './speed-curve-config';
 import { getPresetBezier } from './easing-presets';
 
@@ -256,6 +257,7 @@ export interface SplitSource {
   name: string;
   width?: number;
   height?: number;
+  rotation?: Rotation;
   encodeCapability?: VideoEncodeCapability;
 }
 
@@ -297,6 +299,7 @@ export function buildSectionSegments(
     file: source.file,
     width: source.width,
     height: source.height,
+    rotation: source.rotation,
     encodeCapability: source.encodeCapability,
     sourceStartTime: section.start,
     sourceEndTime: section.end,

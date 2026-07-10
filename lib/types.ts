@@ -2,6 +2,8 @@
  * Shared TypeScript types for the application
  */
 
+import type { Rotation } from 'mediabunny';
+
 export type RenderQuality = 'preview' | 'full';
 
 export type VideoEncodeCapabilityStatus =
@@ -33,6 +35,7 @@ export interface TransitionVideo {
   cachedBlob?: Blob;
   width?: number;
   height?: number;
+  rotation?: Rotation;
   encodeCapability?: VideoEncodeCapability;
   /**
    * "Split a video" mode: presentation-time in/out points (seconds measured

@@ -29,6 +29,7 @@ import {
   Input,
   BlobSource,
   ALL_FORMATS,
+  type Rotation,
 } from 'mediabunny';
 import {
   DEFAULT_CUSTOM_BEZIER,
@@ -54,6 +55,7 @@ type VideoMetadata = {
   width: number;
   height: number;
   duration: number;
+  rotation: Rotation;
 };
 
 type EditorMode = 'stitch' | 'split';
@@ -66,6 +68,7 @@ type SplitSource = {
   duration: number;
   width: number;
   height: number;
+  rotation: Rotation;
   encodeCapability?: VideoEncodeCapability;
 };
 
@@ -92,12 +95,13 @@ const readVideoMetadata = async (
     if (!track) {
       throw new Error('No video track found in this file.');
     }
-    const [displayWidth, displayHeight, codedWidth, codedHeight, canDecode, firstTimestamp, endTimestamp, stats] =
+    const [displayWidth, displayHeight, codedWidth, codedHeight, rotation, canDecode, firstTimestamp, endTimestamp, stats] =
       await Promise.all([
         track.getDisplayWidth(),
         track.getDisplayHeight(),
         track.getCodedWidth(),
         track.getCodedHeight(),
+        track.getRotation(),
         track.canDecode().catch(() => false),
         track.getFirstTimestamp().catch(() => 0),
         track.computeDuration().catch(() => 0),
@@ -113,6 +117,7 @@ const readVideoMetadata = async (
       height: displayHeight,
       codedWidth,
       codedHeight,
+      rotation,
       canDecode,
       duration,
       bitrate:
@@ -398,6 +403,7 @@ export default function Home() {
                     ...v,
                     width: metadata.width,
                     height: metadata.height,
+                    rotation: metadata.rotation,
                     encodeCapability: {
                       status: supported ? 'supported' : 'unsupported',
                       message,
@@ -554,6 +560,7 @@ export default function Home() {
           duration: metadata.duration,
           width: metadata.width,
           height: metadata.height,
+          rotation: metadata.rotation,
           encodeCapability: capability,
         });
       } catch (error) {
@@ -940,6 +947,7 @@ export default function Home() {
         name: splitSource.name,
         width: splitSource.width,
         height: splitSource.height,
+        rotation: splitSource.rotation,
         encodeCapability: splitSource.encodeCapability,
       },
       config.sections,
@@ -1250,6 +1258,7 @@ export default function Home() {
               duration={splitSource.duration}
               width={splitSource.width}
               height={splitSource.height}
+              rotation={splitSource.rotation}
               encodeCapability={splitSource.encodeCapability}
               easingOptions={EASING_PRESETS}
               onCreate={(config: SplitConfig) => {

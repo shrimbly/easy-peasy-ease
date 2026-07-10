@@ -11,8 +11,12 @@ import { SplitTrack } from '@/components/SplitTrack';
 import { useVideoPlayback } from '@/hooks/useVideoPlayback';
 import { formatTime } from '@/lib/timeline-utils';
 import type { VideoEncodeCapability } from '@/lib/types';
+import type { Rotation } from 'mediabunny';
 import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from '@/lib/speed-curve-config';
-import { getVideoPreviewAspectRatio } from '@/lib/video-preview';
+import {
+  getVideoPreviewAspectRatio,
+  getVideoPreviewTransform,
+} from '@/lib/video-preview';
 import {
   deriveSections,
   computeEvenSplitTimes,
@@ -35,6 +39,7 @@ interface VideoSplitEditorProps {
   duration: number;
   width?: number;
   height?: number;
+  rotation?: Rotation;
   encodeCapability?: VideoEncodeCapability;
   easingOptions: string[];
   onCreate: (config: SplitConfig) => void;
@@ -50,6 +55,7 @@ export function VideoSplitEditor({
   duration,
   width,
   height,
+  rotation,
   encodeCapability,
   easingOptions,
   onCreate,
@@ -61,6 +67,7 @@ export function VideoSplitEditor({
   );
   const [sectionLength, setSectionLength] = useState(DEFAULT_SECTION_LENGTH);
   const [outputDuration, setOutputDuration] = useState(DEFAULT_OUTPUT_DURATION);
+  const [previewTransform, setPreviewTransform] = useState({ url: '', value: 'none' });
   const [easingPreset, setEasingPreset] = useState(
     easingOptions.includes(DEFAULT_EASING) ? DEFAULT_EASING : easingOptions[0] ?? DEFAULT_EASING
   );
@@ -109,6 +116,21 @@ export function VideoSplitEditor({
             playsInline
             className="h-full w-full object-contain"
             preload="metadata"
+            style={{
+              transform: previewTransform.url === url ? previewTransform.value : 'none',
+            }}
+            onLoadedMetadata={(event) => {
+              setPreviewTransform({
+                url,
+                value: getVideoPreviewTransform({
+                  expectedWidth: width,
+                  expectedHeight: height,
+                  intrinsicWidth: event.currentTarget.videoWidth,
+                  intrinsicHeight: event.currentTarget.videoHeight,
+                  trackRotation: rotation,
+                }),
+              });
+            }}
           />
         </div>
 

@@ -35,7 +35,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RangeSlider } from '@/components/ui/range-slider';
 import { EasingCurvePicker } from '@/components/ui/easing-curve-picker';
-import { getVideoPreviewAspectRatio } from '@/lib/video-preview';
+import {
+  getVideoPreviewAspectRatio,
+  getVideoPreviewTransform,
+} from '@/lib/video-preview';
 
 const LOOP_OPTIONS = [1, 2, 3] as const;
 const BEZIER_THROTTLE_MS = 75;
@@ -104,6 +107,10 @@ function FinalVideoEditorComponent({
   const [updatePromptReason, setUpdatePromptReason] = useState<'loop' | 'audio' | null>(null);
   const [pendingFullQualityDownload, setPendingFullQualityDownload] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(0);
+  const [previewTransform, setPreviewTransform] = useState({
+    url: '',
+    value: 'none',
+  });
 
   // Refs for tracking what changed to determine update path
   const prevAudioFileRef = useRef<File | null>(null);
@@ -122,6 +129,8 @@ function FinalVideoEditorComponent({
     const firstSegment = segments[0];
     return getVideoPreviewAspectRatio(firstSegment?.width, firstSegment?.height);
   }, [segments]);
+  const activePreviewTransform =
+    previewTransform.url === finalVideo.url ? previewTransform.value : 'none';
   const timelineZoomDisabled =
     totalTimelineDuration === 0 || totalTimelineDuration <= TIMELINE_MIN_VISIBLE_SECONDS;
 
@@ -734,6 +743,20 @@ function FinalVideoEditorComponent({
                 playsInline
                 className="h-full w-full object-contain"
                 preload="metadata"
+                style={{ transform: activePreviewTransform }}
+                onLoadedMetadata={(event) => {
+                  const firstSegment = segments[0];
+                  setPreviewTransform({
+                    url: finalVideo.url,
+                    value: getVideoPreviewTransform({
+                      expectedWidth: firstSegment?.width,
+                      expectedHeight: firstSegment?.height,
+                      intrinsicWidth: event.currentTarget.videoWidth,
+                      intrinsicHeight: event.currentTarget.videoHeight,
+                      trackRotation: firstSegment?.rotation,
+                    }),
+                  });
+                }}
               />
             </div>
 
