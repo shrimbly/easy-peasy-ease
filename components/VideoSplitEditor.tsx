@@ -12,6 +12,7 @@ import { useVideoPlayback } from '@/hooks/useVideoPlayback';
 import { formatTime } from '@/lib/timeline-utils';
 import type { VideoEncodeCapability } from '@/lib/types';
 import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from '@/lib/speed-curve-config';
+import { getVideoPreviewAspectRatio } from '@/lib/video-preview';
 import {
   deriveSections,
   computeEvenSplitTimes,
@@ -84,6 +85,7 @@ export function VideoSplitEditor({
   };
 
   const resolutionLabel = width && height ? `${width}×${height}` : null;
+  const previewAspectRatio = getVideoPreviewAspectRatio(width, height);
   const encodeNote =
     encodeCapability?.status === 'unsupported' || encodeCapability?.status === 'error'
       ? encodeCapability.message
@@ -97,12 +99,15 @@ export function VideoSplitEditor({
     <div className="w-full flex flex-col lg:flex-row gap-4 lg:gap-2 max-w-[1800px] mx-auto lg:h-[calc(100vh-1rem)]">
       {/* Preview + track */}
       <div className="flex-1 flex flex-col gap-4 min-w-0 lg:min-h-0">
-        <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black shadow-xl lg:aspect-auto lg:flex-1 lg:min-h-0">
+        <div
+          className="relative flex w-full items-center justify-center overflow-hidden rounded-xl border border-border bg-black shadow-xl lg:!aspect-auto lg:flex-1 lg:min-h-0"
+          style={{ aspectRatio: previewAspectRatio }}
+        >
           <video
             ref={videoRef}
             src={url}
             playsInline
-            className="h-full w-full"
+            className="h-full w-full object-contain"
             preload="metadata"
           />
         </div>

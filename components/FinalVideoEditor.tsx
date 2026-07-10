@@ -35,6 +35,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RangeSlider } from '@/components/ui/range-slider';
 import { EasingCurvePicker } from '@/components/ui/easing-curve-picker';
+import { getVideoPreviewAspectRatio } from '@/lib/video-preview';
 
 const LOOP_OPTIONS = [1, 2, 3] as const;
 const BEZIER_THROTTLE_MS = 75;
@@ -117,6 +118,10 @@ function FinalVideoEditorComponent({
   const bezierTimeoutRef = useRef<number | null>(null);
 
   const totalTimelineDuration = useMemo(() => getTotalDuration(segments), [segments]);
+  const previewAspectRatio = useMemo(() => {
+    const firstSegment = segments[0];
+    return getVideoPreviewAspectRatio(firstSegment?.width, firstSegment?.height);
+  }, [segments]);
   const timelineZoomDisabled =
     totalTimelineDuration === 0 || totalTimelineDuration <= TIMELINE_MIN_VISIBLE_SECONDS;
 
@@ -717,17 +722,20 @@ function FinalVideoEditorComponent({
         <div className="flex-1 flex flex-col gap-3 lg:gap-6 min-w-0 lg:min-h-0">
           {/* Preview, controls bar and timeline as one connected card */}
           <div className="flex w-full flex-col shadow-xl lg:h-full lg:min-h-0">
-          <div className="relative aspect-video w-full overflow-hidden rounded-t-xl border border-border bg-black lg:aspect-auto lg:flex-1 lg:min-h-0">
-            <video
-              key={finalVideo.url}
-              ref={videoRef}
-              src={finalVideo.url}
-              loop
-              playsInline
-              className="h-full w-full"
-              preload="metadata"
-            />
-          </div>
+            <div
+              className="relative flex w-full items-center justify-center overflow-hidden rounded-t-xl border border-border bg-black lg:!aspect-auto lg:flex-1 lg:min-h-0"
+              style={{ aspectRatio: previewAspectRatio }}
+            >
+              <video
+                key={finalVideo.url}
+                ref={videoRef}
+                src={finalVideo.url}
+                loop
+                playsInline
+                className="h-full w-full object-contain"
+                preload="metadata"
+              />
+            </div>
 
           {/* Controls bar bridging the preview and the timeline */}
           <div className="border-x border-border bg-secondary px-3 py-2">
