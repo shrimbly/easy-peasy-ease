@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle, Scissors, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -433,14 +434,15 @@ export default function Home() {
     [setTransitionVideos]
   );
 
-  const handleVideosUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!(files && files[0])) {
+  const processVideosUpload = useCallback(
+    async (files: File[]) => {
+      const videoFiles = files.filter((file) => file.type.startsWith('video/'));
+      if (videoFiles.length === 0) {
+        setUploadError('Drop one or more MP4 or WebM video files.');
         return;
       }
 
-      const videoFiles = Array.from(files).filter((f) => f.type.startsWith('video/'));
+      setUploadError(null);
       setUploadedVideos(videoFiles);
 
       try {
@@ -483,21 +485,25 @@ export default function Home() {
         void evaluateVideoEncodeCapability(preparedSegments);
       } catch (error) {
         console.error('Failed to process uploaded videos', error);
-      } finally {
-        if (e.target) {
-          e.target.value = '';
-        }
+        setUploadError('Failed to prepare the dropped videos.');
       }
     },
     [cleanupSegmentResources, evaluateVideoEncodeCapability]
   );
-  const handleSplitVideoUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (e.target) {
-        e.target.value = '';
-      }
+
+  const handleVideosUpload = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files ? Array.from(event.target.files) : [];
+      event.target.value = '';
+      await processVideosUpload(files);
+    },
+    [processVideosUpload]
+  );
+
+  const processSplitVideoUpload = useCallback(
+    async (file?: File) => {
       if (!file || !file.type.startsWith('video/')) {
+        setUploadError('Drop a single MP4 or WebM video file.');
         return;
       }
 
@@ -557,6 +563,39 @@ export default function Home() {
       }
     },
     []
+  );
+
+  const handleSplitVideoUpload = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      await processSplitVideoUpload(file);
+    },
+    [processSplitVideoUpload]
+  );
+
+  const handleDropZoneDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setIsDropZoneHovered(false);
+
+      if (!isSupported) return;
+
+      const files = Array.from(event.dataTransfer.files);
+      if (mode === 'split') {
+        const videoFiles = files.filter((file) => file.type.startsWith('video/'));
+        if (videoFiles.length !== 1) {
+          setUploadError('Split mode accepts exactly one video file.');
+          return;
+        }
+        void processSplitVideoUpload(videoFiles[0]);
+        return;
+      }
+
+      void processVideosUpload(files);
+    },
+    [isSupported, mode, processSplitVideoUpload, processVideosUpload]
   );
 
   const handleSelectSegment = (id: number) => {
@@ -1138,10 +1177,11 @@ export default function Home() {
     >
       <LightRays
         className="absolute inset-0 z-0"
-        color={isDropZoneHovered ? "rgba(160, 210, 255, 0.17)" : "rgba(160, 210, 255, 0.15)"}
+        color="rgba(160, 210, 255, 0.15)"
         count={7}
         speed={14}
-        length={isDropZoneHovered ? "85vh" : "70vh"}
+        length="70vh"
+        interactive={isDropZoneHovered}
       />
       <main
         className={cn(
@@ -1236,22 +1276,32 @@ export default function Home() {
                   alpha={false}
                   flex={false}
                   minFontSize={48}
+                  initialAnimationDelay={450}
                   className="text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight text-foreground max-w-4xl"
                 />
+                <AnimatePresence initial={false}>
                 {uploadedVideos.length === 0 && (
-                  <div className="flex flex-col items-center gap-2 px-4">
+                  <motion.div
+                    initial={{ opacity: 0, y: 6, filter: 'blur(3px)' }}
+                    animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                    exit={{ opacity: 0, y: -4, filter: 'blur(2px)' }}
+                    transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                    className="flex flex-col items-center gap-2 px-4"
+                  >
                     <p className="max-w-lg text-base sm:text-lg text-pretty text-muted-foreground">
                       Free tool to stitch and apply ease curves to short videos.
                     </p>
                     <p className="text-xs text-muted-foreground/50">v0.1.3</p>
-                  </div>
+                  </motion.div>
                 )}
+                </AnimatePresence>
               </div>
             </BlurFade>
 
             {/* Upload Area */}
+            <AnimatePresence initial={false} mode="wait">
             {uploadedVideos.length === 0 && (
-              <BlurFade delay={0.2} className="w-full">
+              <BlurFade key="upload" delay={0.12} className="w-full">
                 <div className="w-full space-y-4">
                   {/* Mode toggle: stitch many clips vs split one long video.
                       Toggle buttons (aria-pressed), not a tablist — there is no
@@ -1260,8 +1310,15 @@ export default function Home() {
                     <div
                       role="group"
                       aria-label="Choose how to start"
-                      className="inline-flex rounded-lg border border-border bg-secondary/40 p-1"
+                      className="landing-surface relative isolate inline-grid grid-cols-2 rounded-xl border border-border/70 bg-secondary/40 p-1"
                     >
+                      <motion.span
+                        aria-hidden="true"
+                        initial={false}
+                        animate={{ x: mode === 'stitch' ? '0%' : '100%' }}
+                        transition={{ type: 'tween', duration: 0.24, ease: 'easeOut' }}
+                        className="pointer-events-none absolute inset-y-1 left-1 z-0 w-[calc(50%_-_0.25rem)] rounded-lg bg-primary shadow-sm"
+                      />
                       <button
                         type="button"
                         aria-pressed={mode === 'stitch'}
@@ -1270,14 +1327,14 @@ export default function Home() {
                           setUploadError(null);
                         }}
                         className={cn(
-                          'inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors',
+                          'relative z-10 inline-flex h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-[color,scale] duration-200 ease-out active:scale-[0.96]',
                           mode === 'stitch'
-                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            ? 'text-primary-foreground'
                             : 'text-muted-foreground hover:text-foreground'
                         )}
                       >
                         <Layers className="h-4 w-4" />
-                        Stitch clips
+                        <span>Stitch clips</span>
                       </button>
                       <button
                         type="button"
@@ -1287,14 +1344,14 @@ export default function Home() {
                           setUploadError(null);
                         }}
                         className={cn(
-                          'inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors',
+                          'relative z-10 inline-flex h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-[color,scale] duration-200 ease-out active:scale-[0.96]',
                           mode === 'split'
-                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            ? 'text-primary-foreground'
                             : 'text-muted-foreground hover:text-foreground'
                         )}
                       >
                         <Scissors className="h-4 w-4" />
-                        Split one video
+                        <span>Split one video</span>
                       </button>
                     </div>
                   </div>
@@ -1322,13 +1379,35 @@ export default function Home() {
                   />
                   <div
                     className={cn(
-                      "rounded-lg border-2 border-dashed border-muted-foreground/30 p-12 text-center transition-colors min-h-[300px] flex items-center justify-center",
+                      "landing-drop-zone group min-h-[300px] flex items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/30 p-12 text-center outline-none",
                       isSupported
-                        ? "hover:border-muted-foreground/50 cursor-pointer"
+                        ? "hover:border-primary/45 focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/25 cursor-pointer"
                         : "cursor-not-allowed opacity-75"
                     )}
-                    onMouseEnter={() => isSupported && setIsDropZoneHovered(true)}
-                    onMouseLeave={() => setIsDropZoneHovered(false)}
+                    onPointerEnter={() => isSupported && setIsDropZoneHovered(true)}
+                    onPointerMove={() => {
+                      if (isSupported && !isDropZoneHovered) {
+                        setIsDropZoneHovered(true);
+                      }
+                    }}
+                    onPointerLeave={() => setIsDropZoneHovered(false)}
+                    onDragEnter={(event) => {
+                      event.preventDefault();
+                      if (isSupported) setIsDropZoneHovered(true);
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = isSupported ? 'copy' : 'none';
+                      if (isSupported && !isDropZoneHovered) {
+                        setIsDropZoneHovered(true);
+                      }
+                    }}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        setIsDropZoneHovered(false);
+                      }
+                    }}
+                    onDrop={handleDropZoneDrop}
                     onClick={() =>
                       isSupported &&
                       document.getElementById(mode === 'split' ? 'split-input' : 'videos-input')?.click()
@@ -1352,11 +1431,19 @@ export default function Home() {
                     }
                     aria-disabled={!isSupported}
                   >
-                    <div className="flex flex-col items-center justify-center gap-4">
+                    <AnimatePresence initial={false} mode="wait">
+                    <motion.div
+                      key={mode}
+                      initial={{ opacity: 0, scale: 0.96, y: 5, filter: 'blur(4px)' }}
+                      animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
+                      exit={{ opacity: 0, scale: 0.98, y: -4, filter: 'blur(3px)' }}
+                      transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                      className="flex flex-col items-center justify-center gap-4"
+                    >
                       {mode === 'split' ? (
-                        <Scissors className="h-10 w-10 text-muted-foreground" />
+                        <Scissors className="motion-icon upload-motion-icon h-10 w-10 text-muted-foreground" />
                       ) : (
-                        <Upload className="h-10 w-10 text-muted-foreground" />
+                        <Upload className="motion-icon upload-motion-icon h-10 w-10 text-muted-foreground" />
                       )}
                       <div className="flex flex-col items-center gap-2">
                         <p className="text-sm font-semibold text-foreground">
@@ -1374,17 +1461,33 @@ export default function Home() {
                               : 'MP4, WebM - Select one or more videos'}
                         </p>
                       </div>
-                    </div>
+                    </motion.div>
+                    </AnimatePresence>
                   </div>
 
-                  {uploadError && (
-                    <p className="text-center text-sm text-destructive">{uploadError}</p>
-                  )}
-                  <p className="text-center text-xs text-muted-foreground">
+                  <AnimatePresence initial={false}>
+                    {uploadError && (
+                      <motion.p
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        className="text-center text-sm text-destructive"
+                      >
+                        {uploadError}
+                      </motion.p>
+                    )}
+                  </AnimatePresence>
+                  <motion.p
+                    key={mode}
+                    initial={{ opacity: 0, y: 3 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="text-center text-xs text-pretty text-muted-foreground"
+                  >
                     {mode === 'split'
                       ? 'Chop one long clip into equal sections and ease each one — great for beat-synced loops.'
                       : 'Combine several short clips into a single eased loop.'}
-                  </p>
+                  </motion.p>
                 </div>
               </BlurFade>
             )}
@@ -1392,7 +1495,7 @@ export default function Home() {
 
             {/* Uploaded Videos Preview */}
             {uploadedVideos.length > 0 && (
-              <BlurFade delay={0.2} className="w-full">
+              <BlurFade key="queue" delay={0.04} className="w-full">
                 <div className="w-full space-y-6">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-balance">
@@ -1420,7 +1523,8 @@ export default function Home() {
                   </div>
 
                   {/* Videos List with Reordering */}
-                  <div className="space-y-3">
+                  <motion.div layout className="space-y-3">
+                    <AnimatePresence initial={false} mode="popLayout">
                     {transitionVideos.map((video, index) => {
                       const isDragging = draggingVideoIndex === index;
                       const statusText = video.loading
@@ -1472,11 +1576,18 @@ export default function Home() {
                       }
 
                       return (
-                        <div key={video.id}>
+                        <motion.div
+                          layout
+                          key={video.id}
+                          initial={{ opacity: 0, y: 10, scale: 0.985, filter: 'blur(3px)' }}
+                          animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                          exit={{ opacity: 0, y: -6, scale: 0.985, filter: 'blur(2px)' }}
+                          transition={{ type: 'spring', duration: 0.34, bounce: 0 }}
+                        >
                           <div
                             className={cn(
-                              'flex items-center gap-3 rounded-lg border border-border/80 bg-secondary/50 p-4 transition-colors',
-                              isDragging && 'ring-2 ring-primary/40 bg-secondary'
+                              'landing-surface flex items-center gap-3 rounded-xl border border-border/70 bg-secondary/50 p-4 transition-[background-color,box-shadow,transform] duration-200 ease-out',
+                              isDragging && 'scale-[0.99] ring-2 ring-primary/40 bg-secondary shadow-xl'
                             )}
                             onDragOver={handleVideoDragOver(index)}
                             onDrop={handleVideoDrop(index)}
@@ -1485,7 +1596,7 @@ export default function Home() {
 
                             <button
                               type="button"
-                              className="flex h-8 w-8 items-center justify-center rounded-md border border-dashed border-border/70 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary cursor-grab"
+                              className="flex h-10 w-10 items-center justify-center rounded-md border border-dashed border-border/70 text-muted-foreground transition-[color,background-color,scale] duration-150 hover:bg-accent hover:text-foreground active:scale-[0.96] focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary cursor-grab"
                               draggable
                               onDragStart={handleVideoDragStart(index)}
                               onDragEnd={handleVideoDragEnd}
@@ -1545,12 +1656,16 @@ export default function Home() {
                             </Button>
                           </div>
                           {dropIndicatorIndex === index && (
-                            <div className="h-0.5 bg-primary mt-2 mb-1" />
+                            <motion.div
+                              layoutId="video-drop-indicator"
+                              className="h-0.5 bg-primary mt-2 mb-1 shadow-[0_0_12px_var(--primary)]"
+                            />
                           )}
-                        </div>
+                        </motion.div>
                       );
                     })}
-                  </div>
+                    </AnimatePresence>
+                  </motion.div>
 
                   {/* Finalize Button for Uploaded Videos */}
                   {transitionVideos.every((v) => v.url && !v.loading) && !isFinalizingVideo && (
@@ -1633,6 +1748,7 @@ export default function Home() {
                 </div>
               </BlurFade>
             )}
+            </AnimatePresence>
 
           </>
         )}
@@ -1673,7 +1789,7 @@ export default function Home() {
         By Willie —{' '}
         <a
           href="https://github.com/shrimbly/easy-peasy-ease"
-          className="underline hover:text-foreground transition-colors"
+          className="inline-block underline transition-[color,transform] duration-150 hover:-translate-y-px hover:text-foreground focus-visible:text-foreground"
           target="_blank"
           rel="noreferrer"
         >
@@ -1682,7 +1798,7 @@ export default function Home() {
         —{' '}
         <a
           href="https://x.com/ReflctWillie"
-          className="underline hover:text-foreground transition-colors"
+          className="inline-block underline transition-[color,transform] duration-150 hover:-translate-y-px hover:text-foreground focus-visible:text-foreground"
           target="_blank"
           rel="noreferrer"
         >

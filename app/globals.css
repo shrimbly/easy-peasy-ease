@@ -99,6 +99,8 @@
   --shadow-lg: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 4px 6px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
   --shadow-xl: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 8px 10px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
   --shadow-2xl: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.25);
+  --ease-out-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-interactive: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .dark {
@@ -141,6 +143,18 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  button,
+  [role='button'],
+  a {
+    -webkit-tap-highlight-color: transparent;
   }
 
   /* Native range sliders — themed to the palette instead of browser blue.
@@ -241,6 +255,56 @@
   }
 }
 
+.landing-surface {
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.035) inset,
+    0 24px 70px rgb(0 0 0 / 0.16);
+}
+
+.landing-drop-zone {
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--primary) 7%, transparent), transparent 48%),
+    color-mix(in srgb, var(--secondary) 42%, transparent);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.035) inset,
+    0 18px 48px rgb(0 0 0 / 0.1);
+  transition-property: border-color, background-color, box-shadow, transform;
+  transition-duration: 260ms;
+  transition-timing-function: var(--ease-interactive);
+}
+
+.landing-drop-zone:hover,
+.landing-drop-zone:focus-visible {
+  transform: translateY(-2px);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.06) inset,
+    0 24px 70px rgb(0 0 0 / 0.2),
+    0 0 0 1px color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.landing-drop-zone:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.motion-icon {
+  transition-property: color, transform, filter;
+  transition-duration: 260ms;
+  transition-timing-function: var(--ease-interactive);
+}
+
+.group:hover .motion-icon,
+.group:focus-visible .motion-icon {
+  color: var(--primary);
+  transform: translateY(-3px) scale(1.06);
+  filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--primary) 25%, transparent));
+}
+
+.landing-drop-zone:hover .upload-motion-icon,
+.landing-drop-zone:focus-visible .upload-motion-icon {
+  color: var(--foreground);
+  filter: drop-shadow(0 6px 14px rgb(255 255 255 / 0.18));
+}
+
 /* Tempo dot in the beat-snap pill: sharp hit on the beat, eased decay. */
 @keyframes beat-pulse {
   0%,
@@ -257,6 +321,15 @@
 @media (prefers-reduced-motion: reduce) {
   .beat-pulse-dot {
     animation: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 

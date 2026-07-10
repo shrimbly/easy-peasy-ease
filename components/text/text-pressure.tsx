@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useReducedMotion } from "motion/react";
 import { cn } from "@/lib/utils";
 
 interface TextPressureProps {
@@ -18,6 +19,7 @@ interface TextPressureProps {
   strokeColor?: string;
   strokeWidth?: number;
   minFontSize?: number;
+  initialAnimationDelay?: number;
   className?: string;
 }
 
@@ -36,10 +38,12 @@ const TextPressure = ({
   strokeColor = "#FF0000",
   strokeWidth = 2,
   minFontSize = 24,
+  initialAnimationDelay = 0,
   className,
 }: TextPressureProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const charsRef = useRef<HTMLSpanElement[]>([]);
+  const shouldReduceMotion = useReducedMotion();
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isAnimating, setIsAnimating] = useState(true);
 
@@ -63,46 +67,47 @@ const TextPressure = ({
 
   // Initial animation - simulate mouse drag left to right
   useEffect(() => {
+    if (shouldReduceMotion) return;
     if (!isAnimating || !containerRef.current) return;
 
-    const container = containerRef.current;
-    const containerRect = container.getBoundingClientRect();
-    const startX = containerRect.left - 100;
-    const endX = containerRect.right + 100;
-    const centerY = containerRect.top + containerRect.height / 2;
+    let animationFrame = 0;
+    const delayTimer = window.setTimeout(() => {
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
 
-    // Animation duration in milliseconds (easing in and out)
-    const duration = 2000;
-    const startTime = Date.now();
+      const startX = containerRect.left - 100;
+      const endX = containerRect.right + 100;
+      const centerY = containerRect.top + containerRect.height / 2;
+      const duration = 2000;
+      const startTime = Date.now();
 
-    const animateMouseDrag = () => {
-      const elapsed = Date.now() - startTime;
-      const progress = Math.min(elapsed / duration, 1);
+      const animateMouseDrag = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const easedProgress = -(Math.cos(Math.PI * progress) - 1) / 2;
+        const x = startX + (endX - startX) * easedProgress;
 
-      // Ease-in-out sine function (gentle start and end, slower middle)
-      const easeInOutSine = (t: number) => {
-        return -(Math.cos(Math.PI * t) - 1) / 2;
+        setMousePos({ x, y: centerY });
+
+        if (progress < 1) {
+          animationFrame = requestAnimationFrame(animateMouseDrag);
+        } else {
+          setIsAnimating(false);
+        }
       };
 
-      const easedProgress = easeInOutSine(progress);
-      const x = startX + (endX - startX) * easedProgress;
+      animationFrame = requestAnimationFrame(animateMouseDrag);
+    }, initialAnimationDelay);
 
-      setMousePos({ x, y: centerY });
-
-      if (progress < 1) {
-        requestAnimationFrame(animateMouseDrag);
-      } else {
-        setIsAnimating(false);
-      }
+    return () => {
+      window.clearTimeout(delayTimer);
+      cancelAnimationFrame(animationFrame);
     };
-
-    const animationFrame = requestAnimationFrame(animateMouseDrag);
-    return () => cancelAnimationFrame(animationFrame);
-  }, [isAnimating]);
+  }, [initialAnimationDelay, isAnimating, shouldReduceMotion]);
 
   // Handle mouse movement
   useEffect(() => {
-    if (isAnimating) return;
+    if (isAnimating || shouldReduceMotion) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       setMousePos({ x: e.clientX, y: e.clientY });
@@ -110,12 +115,12 @@ const TextPressure = ({
 
     window.addEventListener("mousemove", handleMouseMove);
     return () => window.removeEventListener("mousemove", handleMouseMove);
-  }, [isAnimating]);
+  }, [isAnimating, shouldReduceMotion]);
 
   // Update character styles based on cursor proximity
   useEffect(() => {
     const updateCharacters = () => {
-      if (!containerRef.current || charsRef.current.length === 0) return;
+      if (shouldReduceMotion || !containerRef.current || charsRef.current.length === 0) return;
 
       charsRef.current.forEach((char) => {
         if (!char) return;
@@ -168,7 +173,7 @@ const TextPressure = ({
 
     const animationFrame = requestAnimationFrame(updateCharacters);
     return () => cancelAnimationFrame(animationFrame);
-  }, [mousePos, weight, width, italic, alpha]);
+  }, [mousePos, weight, width, italic, alpha, shouldReduceMotion]);
 
   // Split text into characters
   const characters = text.split("");
@@ -201,7 +206,9 @@ const TextPressure = ({
               ? `${strokeWidth}px ${strokeColor}`
               : undefined,
             whiteSpace: char === " " ? "pre" : undefined,
-            transition: "font-variation-settings 0.1s ease-out",
+            transition: shouldReduceMotion
+              ? undefined
+              : "font-variation-settings 120ms cubic-bezier(0.2, 0, 0, 1)",
           } as React.CSSProperties}
         >
           {char}
