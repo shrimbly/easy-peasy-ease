@@ -3,22 +3,26 @@
 import { useRef } from "react"
 import {
   motion,
-  MotionProps,
   useInView,
   useReducedMotion,
+} from "motion/react"
+import type {
+  MotionProps,
   UseInViewOptions,
+  Variant,
   Variants,
 } from "motion/react"
 
 type MarginType = UseInViewOptions["margin"]
+type BlurFadeVariants = Variants & {
+  hidden: Variant
+  visible: Variant
+}
 
 interface BlurFadeProps extends MotionProps {
   children: React.ReactNode
   className?: string
-  variant?: {
-    hidden: { y?: number; x?: number; opacity?: number; filter?: string }
-    visible: { y?: number; x?: number; opacity?: number; filter?: string }
-  }
+  variant?: BlurFadeVariants
   duration?: number
   delay?: number
   offset?: number
@@ -39,6 +43,8 @@ export function BlurFade({
   inView = false,
   inViewMargin = "-50px",
   blur = "6px",
+  exit: exitProp,
+  transition: transitionProp,
   ...props
 }: BlurFadeProps) {
   const ref = useRef(null)
@@ -59,23 +65,28 @@ export function BlurFade({
     },
   }
   const combinedVariants = variant || defaultVariants
+  const exitAnimation = exitProp ?? {
+    opacity: 0,
+    y: -6,
+    filter: "blur(3px)",
+    transition: { duration: 0.15, ease: "easeIn" as const },
+  }
   return (
     <motion.div
       ref={ref}
       initial={shouldReduceMotion ? false : "hidden"}
       animate={isInView ? "visible" : "hidden"}
-      exit={shouldReduceMotion ? undefined : {
-        opacity: 0,
-        y: -6,
-        filter: "blur(3px)",
-        transition: { duration: 0.15, ease: "easeIn" },
-      }}
+      exit={shouldReduceMotion ? undefined : exitAnimation}
       variants={combinedVariants}
-      transition={shouldReduceMotion ? { duration: 0 } : {
-        delay: 0.04 + delay,
-        duration,
-        ease: [0.22, 1, 0.36, 1],
-      }}
+      transition={
+        shouldReduceMotion
+          ? { duration: 0 }
+          : transitionProp ?? {
+              delay: 0.04 + delay,
+              duration,
+              ease: [0.22, 1, 0.36, 1],
+            }
+      }
       className={className}
       {...props}
     >

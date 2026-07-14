@@ -17,6 +17,13 @@ export const CubicBezierEditor = memo(CubicBezierEditorComponent);
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
 const DEFAULT_SIZE = 320;
 const DEBUG_BEZIER = process.env.NODE_ENV !== 'production';
+const GRID_LINES = Array.from({ length: 15 }, (_, index) => {
+  const division = index + 1;
+  return {
+    position: (division / 16) * 100,
+    major: division % 4 === 0,
+  };
+});
 
 type Palette = {
   background: string;
@@ -163,10 +170,10 @@ function CubicBezierEditorComponent({
   const draggingHandleRef = useRef<'p1' | 'p2' | null>(null);
   const [draggingHandle, setDraggingHandle] = useState<'p1' | 'p2' | null>(null);
   const [palette, setPalette] = useState<Palette>({
-    background: '#09090b',
-    border: 'rgba(255,255,255,0.12)',
-    muted: 'rgba(255,255,255,0.35)',
-    primary: '#a855f7',
+    background: '#0f1d20',
+    border: '#243538',
+    muted: '#7c9095',
+    primary: '#dbfea3',
   });
   const paletteUpdateFrameRef = useRef<number | null>(null);
   const commitFrameRef = useRef<number | null>(null);
@@ -196,10 +203,10 @@ function CubicBezierEditorComponent({
 
   const refreshPalette = useCallback(() => {
     const nextPalette: Palette = {
-      background: readCssColor('--background', '#09090b'),
-      border: readCssColor('--border', 'rgba(255,255,255,0.12)'),
-      muted: readCssColor('--muted-foreground', 'rgba(255,255,255,0.35)'),
-      primary: readCssColor('--primary', '#a855f7'),
+      background: readCssColor('--background', '#0f1d20'),
+      border: readCssColor('--border', '#243538'),
+      muted: readCssColor('--muted-foreground', '#7c9095'),
+      primary: readCssColor('--primary', '#dbfea3'),
     };
     setPalette((prev) => (arePalettesEqual(prev, nextPalette) ? prev : nextPalette));
   }, [readCssColor]);
@@ -217,10 +224,13 @@ function CubicBezierEditorComponent({
   }, [refreshPalette]);
 
   useEffect(() => {
-    schedulePaletteRefresh();
-    if (typeof document === 'undefined') {
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
       return;
     }
+    paletteUpdateFrameRef.current = window.requestAnimationFrame(() => {
+      paletteUpdateFrameRef.current = null;
+      refreshPalette();
+    });
     const hasMutationObserver = typeof MutationObserver !== 'undefined';
     const observer = hasMutationObserver
       ? new MutationObserver(() => {
@@ -230,25 +240,17 @@ function CubicBezierEditorComponent({
 
     observer?.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['class'],
+      attributeFilter: ['class', 'style'],
     });
-
-    const media =
-      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-        ? window.matchMedia('(prefers-color-scheme: dark)')
-        : null;
-    const handleSchemeChange = () => schedulePaletteRefresh();
-    media?.addEventListener('change', handleSchemeChange);
 
     return () => {
       observer?.disconnect();
-      media?.removeEventListener('change', handleSchemeChange);
       if (paletteUpdateFrameRef.current !== null) {
         cancelAnimationFrame(paletteUpdateFrameRef.current);
         paletteUpdateFrameRef.current = null;
       }
     };
-  }, [schedulePaletteRefresh]);
+  }, [refreshPalette, schedulePaletteRefresh]);
 
   const flushPendingChange = useCallback(() => {
     commitFrameRef.current = null;
@@ -326,6 +328,32 @@ function CubicBezierEditorComponent({
     [disabled, updateHandleFromClient]
   );
 
+  const handleControlPointKeyDown = useCallback(
+    (handle: 'p1' | 'p2', event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (disabled) return;
+      const step = event.shiftKey ? 0.1 : 0.01;
+      const deltas: Record<string, [number, number]> = {
+        ArrowDown: [0, -step],
+        ArrowLeft: [-step, 0],
+        ArrowRight: [step, 0],
+        ArrowUp: [0, step],
+      };
+      const delta = deltas[event.key];
+      if (!delta) return;
+
+      event.preventDefault();
+      const current = valueRef.current;
+      const pointOffset = handle === 'p1' ? 0 : 2;
+      const nextValue = [...current] as [number, number, number, number];
+      nextValue[pointOffset] = clamp(current[pointOffset] + delta[0]);
+      nextValue[pointOffset + 1] = clamp(current[pointOffset + 1] + delta[1]);
+      valueRef.current = nextValue;
+      onChange(nextValue);
+      onCommit?.(nextValue);
+    },
+    [disabled, onChange, onCommit]
+  );
+
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
       const handle = draggingHandleRef.current;
@@ -385,82 +413,96 @@ function CubicBezierEditorComponent({
   );
 
   return (
-    <div className={cn('space-y-3 lg:flex lg:min-h-0 lg:flex-col', className)}>
-      {/* On lg the frame flexes so the plot absorbs whatever height keeps the
-          sidebar level with the preview/timeline column (min-h keeps it
-          usable on short viewports). */}
-      {/* Height caps live on the caller-supplied root className so leftover
-          flex space pools after the whole editor, not inside it. */}
-      <div className="relative w-full rounded-lg border border-border bg-muted/50 p-3 sm:p-4 lg:flex lg:min-h-48 lg:flex-1 lg:justify-center">
+    <div className={cn('min-w-0 space-y-3', className)}>
+      <div className="relative w-full rounded-md border border-border bg-muted/50 p-1">
         {/* Wider-than-tall on phones to save vertical space; the SVG uses
             preserveAspectRatio="none" and the drag math normalises by the
             rect's own width/height, so a non-square plot stays correct. */}
-        <div ref={editorRef} className="relative mx-auto aspect-[16/9] w-full max-w-md sm:aspect-square lg:mx-0 lg:w-auto lg:max-w-full">
-          <svg
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
-            className="absolute inset-0 h-full w-full select-none"
-            aria-hidden="true"
+        <div ref={editorRef} className="relative mx-auto aspect-[16/9] w-full max-w-md sm:aspect-square">
+          <div
+            className="pointer-events-none absolute inset-0 overflow-hidden rounded-sm"
+            style={{ backgroundColor: palette.background }}
           >
-            <rect
-              x="0"
-              y="0"
-              width="100"
-              height="100"
-              fill={palette.background}
-              stroke={palette.border}
-              strokeWidth="0.8"
-              rx="2"
+            <svg
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+              className="absolute inset-0 size-full select-none"
+              aria-hidden="true"
+            >
+              {GRID_LINES.map(({ position, major }) => (
+                <g
+                  key={position}
+                  stroke={palette.border}
+                  strokeWidth={major ? 0.35 : 0.18}
+                  strokeOpacity={major ? 0.55 : 0.28}
+                >
+                  <line x1={position} y1="0" x2={position} y2="100" />
+                  <line x1="0" y1={position} x2="100" y2={position} />
+                </g>
+              ))}
+              <line
+                x1="0"
+                y1="100"
+                x2="100"
+                y2="0"
+                stroke={palette.border}
+                strokeWidth="0.6"
+                strokeDasharray="4 4"
+                strokeOpacity="0.7"
+              />
+              <g stroke={palette.muted} strokeWidth="0.8">
+                <line x1="0" y1="100" x2={svgPoints.c1.x} y2={svgPoints.c1.y} />
+                <line x1="100" y1="0" x2={svgPoints.c2.x} y2={svgPoints.c2.y} />
+              </g>
+              <path
+                d={curvePath}
+                fill="none"
+                stroke={palette.primary}
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span
+              aria-hidden="true"
+              className="absolute inset-0 rounded-sm border"
+              style={{ borderColor: palette.border }}
             />
-            <g stroke={palette.border} strokeWidth="0.4" strokeOpacity="0.6">
-              <line x1="0" y1="50" x2="100" y2="50" />
-              <line x1="50" y1="0" x2="50" y2="100" />
-            </g>
-            <line
-              x1="0"
-              y1="100"
-              x2="100"
-              y2="0"
-              stroke={palette.border}
-              strokeWidth="0.6"
-              strokeDasharray="4 4"
-              strokeOpacity="0.7"
-            />
-            <g stroke={palette.muted} strokeWidth="0.8">
-              <line x1="0" y1="100" x2={svgPoints.c1.x} y2={svgPoints.c1.y} />
-              <line x1="100" y1="0" x2={svgPoints.c2.x} y2={svgPoints.c2.y} />
-            </g>
-            <path
-              d={curvePath}
-              fill="none"
-              stroke={palette.primary}
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
+          </div>
           <button
             type="button"
-            aria-label="Adjust control point 1"
-            className={`absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-background/80 bg-primary/80 shadow transition active:cursor-grabbing active:scale-[0.96] disabled:cursor-not-allowed disabled:pointer-events-none touch-none ${
-              draggingHandle === 'p1' ? 'ring-2 ring-primary/80' : ''
-            }`}
+            aria-label={`Adjust control point 1, ${value[0].toFixed(2)}, ${value[1].toFixed(2)}`}
+            className="group absolute flex size-10 -translate-x-1/2 -translate-y-1/2 touch-none cursor-grab items-center justify-center rounded-full active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:cursor-not-allowed"
             style={controlStyles.p1}
             onPointerDown={(event) => startDragging('p1', event)}
+            onKeyDown={(event) => handleControlPointKeyDown('p1', event)}
             disabled={disabled}
-          />
+          >
+            <span
+              className={cn(
+                'pointer-events-none size-4 rounded-full border-2 border-background/80 bg-primary/80 shadow transition-[scale,box-shadow] duration-150 group-active:scale-[0.96]',
+                draggingHandle === 'p1' && 'ring-2 ring-primary/80'
+              )}
+            />
+          </button>
           <button
             type="button"
-            aria-label="Adjust control point 2"
-            className={`absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-background/80 bg-primary/80 shadow transition active:cursor-grabbing active:scale-[0.96] disabled:cursor-not-allowed disabled:pointer-events-none touch-none ${
-              draggingHandle === 'p2' ? 'ring-2 ring-primary/80' : ''
-            }`}
+            aria-label={`Adjust control point 2, ${value[2].toFixed(2)}, ${value[3].toFixed(2)}`}
+            className="group absolute flex size-10 -translate-x-1/2 -translate-y-1/2 touch-none cursor-grab items-center justify-center rounded-full active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:cursor-not-allowed"
             style={controlStyles.p2}
             onPointerDown={(event) => startDragging('p2', event)}
+            onKeyDown={(event) => handleControlPointKeyDown('p2', event)}
             disabled={disabled}
-          />
+          >
+            <span
+              className={cn(
+                'pointer-events-none size-4 rounded-full border-2 border-background/80 bg-primary/80 shadow transition-[scale,box-shadow] duration-150 group-active:scale-[0.96]',
+                draggingHandle === 'p2' && 'ring-2 ring-primary/80'
+              )}
+            />
+          </button>
         </div>
       </div>
-      <div className="hidden sm:grid grid-cols-2 gap-3 text-xs text-muted-foreground tabular-nums">
+      <div className="hidden grid-cols-2 gap-3 font-mono text-xs tabular-nums text-muted-foreground sm:grid">
         <p>
           <span className="font-medium text-foreground">Point 1</span>{' '}
           {value[0].toFixed(2)}, {value[1].toFixed(2)}

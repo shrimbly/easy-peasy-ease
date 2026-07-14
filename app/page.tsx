@@ -1,17 +1,21 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Upload, Play, PlayCircle, GripVertical, Trash2, AlertTriangle, Scissors, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { LightRays } from '@/components/ui/light-rays';
 import { BlurFade } from '@/components/ui/blur-fade';
+import {
+  SegmentedControl,
+  segmentedControlItemClassName,
+} from '@/components/ui/segmented-control';
 import { FinalVideoEditor } from '@/components/FinalVideoEditor';
 import { VideoSplitEditor, type SplitConfig } from '@/components/VideoSplitEditor';
 import { buildSectionSegments } from '@/lib/chunking';
-import { useFinalizeVideo } from '@/hooks/useFinalizeVideo';
+import { useFinalizeVideo, type FinalizeProgress } from '@/hooks/useFinalizeVideo';
 import {
   TransitionVideo,
   FinalVideo,
@@ -79,6 +83,88 @@ interface PreflightWarning {
   title: string;
   description: string;
   severity: 'warning' | 'error';
+}
+
+interface FinalizationProgressStatusProps {
+  message: string;
+  progress: number;
+  onCancel: () => void;
+}
+
+function FinalizationProgressStatus({
+  message,
+  progress,
+  onCancel,
+}: FinalizationProgressStatusProps) {
+  const normalizedProgress = Math.min(100, Math.max(0, progress));
+  const roundedProgress = Math.round(normalizedProgress);
+  const statusMessage = message || 'Preparing your clips…';
+
+  return (
+    <div className="w-full space-y-3">
+      <div className="grid h-10 grid-cols-[minmax(0,1fr)_3rem] items-start gap-3">
+        <div
+          className="flex h-10 min-w-0 items-center overflow-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <p className="line-clamp-2 text-sm font-semibold leading-5 text-foreground">
+            {statusMessage}
+          </p>
+        </div>
+        <span className="pt-0.5 text-right font-mono text-sm tabular-nums text-muted-foreground">
+          {roundedProgress}%
+        </span>
+      </div>
+      <div
+        className="h-2 w-full overflow-hidden rounded-full bg-secondary"
+        role="progressbar"
+        aria-label="Rendering progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={roundedProgress}
+      >
+        <div
+          className="h-full bg-primary transition-[width] duration-300 ease-out"
+          style={{ width: `${normalizedProgress}%` }}
+        />
+      </div>
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function formatFinalizationStatus({
+  stage,
+  currentVideo,
+  totalVideos,
+}: FinalizeProgress): string {
+  const clipNumber =
+    currentVideo && totalVideos ? ` ${currentVideo} of ${totalVideos}` : '';
+
+  switch (stage) {
+    case 'applying-curves':
+      return `Rendering clip${clipNumber}…`;
+    case 'mixing-audio':
+      return 'Preparing audio…';
+    case 'stitching':
+      return currentVideo && totalVideos
+        ? `Stitching clip${clipNumber}…`
+        : 'Stitching clips…';
+    case 'remuxing':
+      return 'Updating audio…';
+    case 'complete':
+      return 'Render complete';
+    case 'error':
+      return 'Render failed';
+    case 'idle':
+      return 'Preparing render…';
+  }
 }
 
 /**
@@ -212,6 +298,7 @@ const syncSegmentsToLoopCount = (
 };
 
 export default function Home() {
+  const shouldReduceMotion = useReducedMotion();
   const [uploadedVideos, setUploadedVideos] = useState<File[]>([]);
   const [mode, setMode] = useState<EditorMode>('stitch');
   const [splitSource, setSplitSource] = useState<SplitSource | null>(null);
@@ -858,7 +945,7 @@ export default function Home() {
       setFinalizationProgress(0);
       setFinalizeError(null);
       setFinalizeWarnings([]);
-      setFinalizationMessage(effectiveQuality === 'preview' ? 'Initializing preview render...' : 'Initializing...');
+      setFinalizationMessage(effectiveQuality === 'preview' ? 'Preparing preview…' : 'Preparing render…');
 
       const segmentsToFinalize = syncSegmentsToLoopCount(baseSegments, loopCount);
 
@@ -880,7 +967,7 @@ export default function Home() {
         context,
         (progress) => {
           setFinalizationProgress(progress.progress);
-          setFinalizationMessage(progress.message);
+          setFinalizationMessage(formatFinalizationStatus(progress));
           if (progress.warnings) {
             latestWarnings = progress.warnings;
           }
@@ -919,11 +1006,11 @@ export default function Home() {
       });
       setCurrentRenderQuality(effectiveQuality);
 
-      setFinalizationMessage(effectiveQuality === 'preview' ? 'Preview ready!' : 'Video finalized successfully!');
+      setFinalizationMessage(effectiveQuality === 'preview' ? 'Preview ready' : 'Video ready');
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       console.error('Error finalizing video:', error);
-      setFinalizationMessage(`Error: ${errorMsg}`);
+      setFinalizationMessage('Render failed');
       // Surface the failure in a dialog that outlives the progress modal —
       // errors used to vanish with it, leaving users with no explanation.
       setFinalizeError(errorMsg);
@@ -1147,31 +1234,47 @@ export default function Home() {
     <Dialog open={isFinalizingVideo}>
       <DialogContent className="max-w-sm">
         <DialogTitle className="sr-only">Video Processing</DialogTitle>
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <p className="font-semibold text-foreground">
-              {finalizationMessage}
-            </p>
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <span>Processing...</span>
-              <span className="tabular-nums">{Math.round(finalizationProgress)}%</span>
-            </div>
-          </div>
-          <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-            <div
-              className="h-full bg-primary transition-[width] duration-300"
-              style={{ width: `${finalizationProgress}%` }}
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button variant="outline" size="sm" onClick={handleCancelFinalize}>
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <FinalizationProgressStatus
+          message={finalizationMessage}
+          progress={finalizationProgress}
+          onCancel={handleCancelFinalize}
+        />
       </DialogContent>
     </Dialog>
   );
+
+  const modeDirection = mode === 'split' ? 1 : -1;
+  const modeRevealVariant = {
+    hidden: (direction: number) =>
+      shouldReduceMotion
+        ? { opacity: 0, filter: 'blur(2px)' }
+        : { x: direction * -4, opacity: 0, filter: 'blur(4px)' },
+    visible: { x: 0, opacity: 1, filter: 'blur(0px)' },
+    exit: (direction: number) =>
+      shouldReduceMotion
+        ? {
+            opacity: 0,
+            filter: 'blur(2px)',
+            transition: { duration: 0.15 },
+          }
+        : {
+            x: direction * 4,
+            opacity: 0,
+            filter: 'blur(4px)',
+            transition: { duration: 0.22, ease: [0.4, 0, 1, 1] as const },
+          },
+  };
+  const modeGroupVariant = {
+    exit: (direction: number) =>
+      shouldReduceMotion
+        ? { opacity: 0, filter: 'blur(2px)', transition: { duration: 0.15 } }
+        : {
+            x: direction * 4,
+            opacity: 0,
+            filter: 'blur(4px)',
+            transition: { duration: 0.22, ease: [0.4, 0, 1, 1] as const },
+          },
+  };
 
   return (
     <div className="flex flex-1 flex-col">
@@ -1258,7 +1361,6 @@ export default function Home() {
               duration={splitSource.duration}
               width={splitSource.width}
               height={splitSource.height}
-              rotation={splitSource.rotation}
               encodeCapability={splitSource.encodeCapability}
               easingOptions={EASING_PRESETS}
               onCreate={(config: SplitConfig) => {
@@ -1274,8 +1376,8 @@ export default function Home() {
         ) : (
           <>
             {/* Header */}
-            <BlurFade>
-              <div className="flex flex-col items-center gap-3 text-center">
+            <div className="flex flex-col items-center gap-3 text-center">
+              <BlurFade delay={0} duration={0.55} offset={8} className="w-full">
                 <TextPressure
                   text="EasyPeasyEase"
                   fontFamily="var(--font-inter-variable)"
@@ -1284,50 +1386,42 @@ export default function Home() {
                   italic={false}
                   alpha={false}
                   flex={false}
-                  minFontSize={48}
-                  initialAnimationDelay={450}
+                  initialAnimationDelay={700}
                   className="text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight text-foreground max-w-4xl"
                 />
-                <AnimatePresence initial={false}>
+              </BlurFade>
+                <AnimatePresence>
                 {uploadedVideos.length === 0 && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 6, filter: 'blur(3px)' }}
-                    animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                    exit={{ opacity: 0, y: -4, filter: 'blur(2px)' }}
-                    transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                  <BlurFade
+                    key="intro-copy"
+                    delay={0.08}
+                    duration={0.55}
+                    offset={8}
                     className="flex flex-col items-center gap-2 px-4"
                   >
-                    <p className="max-w-lg text-base sm:text-lg text-pretty text-muted-foreground">
+                    <p className="max-w-lg text-pretty text-base font-normal text-muted-foreground">
                       Free tool to stitch and apply ease curves to short videos.
                     </p>
                     <p className="text-xs text-muted-foreground/50">v0.1.3</p>
-                  </motion.div>
+                  </BlurFade>
                 )}
                 </AnimatePresence>
-              </div>
-            </BlurFade>
+            </div>
 
             {/* Upload Area */}
-            <AnimatePresence initial={false} mode="wait">
+            <AnimatePresence mode="wait">
             {uploadedVideos.length === 0 && (
-              <BlurFade key="upload" delay={0.12} className="w-full">
-                <div className="w-full space-y-4">
+              <motion.div key="upload" className="w-full space-y-4">
                   {/* Mode toggle: stitch many clips vs split one long video.
                       Toggle buttons (aria-pressed), not a tablist — there is no
                       tabpanel and no roving-tabindex arrow-key contract here. */}
-                  <div className="flex justify-center">
-                    <div
+                  <BlurFade delay={0.16} duration={0.55} offset={8} className="flex justify-center">
+                    <SegmentedControl
+                      activeIndex={mode === 'stitch' ? 0 : 1}
                       role="group"
                       aria-label="Choose how to start"
-                      className="landing-surface relative isolate inline-grid grid-cols-2 rounded-xl border border-border/70 bg-secondary/40 p-1"
+                      className="tracking-[-0.005em]"
                     >
-                      <motion.span
-                        aria-hidden="true"
-                        initial={false}
-                        animate={{ x: mode === 'stitch' ? '0%' : '100%' }}
-                        transition={{ type: 'tween', duration: 0.24, ease: 'easeOut' }}
-                        className="pointer-events-none absolute inset-y-1 left-1 z-0 w-[calc(50%_-_0.25rem)] rounded-lg bg-primary shadow-sm"
-                      />
                       <button
                         type="button"
                         aria-pressed={mode === 'stitch'}
@@ -1335,15 +1429,10 @@ export default function Home() {
                           setMode('stitch');
                           setUploadError(null);
                         }}
-                        className={cn(
-                          'relative z-10 inline-flex h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-[color,scale] duration-200 ease-out active:scale-[0.96]',
-                          mode === 'stitch'
-                            ? 'text-primary-foreground'
-                            : 'text-muted-foreground hover:text-foreground'
-                        )}
+                        className={segmentedControlItemClassName}
                       >
                         <Layers className="h-4 w-4" />
-                        <span>Stitch clips</span>
+                        <span className="text-sm font-medium">Stitch clips</span>
                       </button>
                       <button
                         type="button"
@@ -1352,18 +1441,13 @@ export default function Home() {
                           setMode('split');
                           setUploadError(null);
                         }}
-                        className={cn(
-                          'relative z-10 inline-flex h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-[color,scale] duration-200 ease-out active:scale-[0.96]',
-                          mode === 'split'
-                            ? 'text-primary-foreground'
-                            : 'text-muted-foreground hover:text-foreground'
-                        )}
+                        className={segmentedControlItemClassName}
                       >
                         <Scissors className="h-4 w-4" />
-                        <span>Split one video</span>
+                        <span className="text-sm font-medium">Split one video</span>
                       </button>
-                    </div>
-                  </div>
+                    </SegmentedControl>
+                  </BlurFade>
 
                   <input
                     type="file"
@@ -1386,13 +1470,14 @@ export default function Home() {
                     id="split-input"
                     disabled={!isSupported}
                   />
-                  <div
-                    className={cn(
-                      "landing-drop-zone group min-h-[300px] flex items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/30 p-12 text-center outline-none",
-                      isSupported
-                        ? "hover:border-primary/45 focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/25 cursor-pointer"
-                        : "cursor-not-allowed opacity-75"
-                    )}
+                  <BlurFade delay={0.24} duration={0.6} offset={10} blur="8px">
+                    <div
+                      className={cn(
+                        "landing-drop-zone group min-h-[300px] flex items-center justify-center rounded-2xl border-2 border-dashed border-muted-foreground/30 p-12 text-center outline-none",
+                        isSupported
+                          ? "hover:border-primary/45 focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-primary/25 cursor-pointer"
+                          : "cursor-not-allowed opacity-75"
+                      )}
                     onPointerEnter={() => isSupported && setIsDropZoneHovered(true)}
                     onPointerMove={() => {
                       if (isSupported && !isDropZoneHovered) {
@@ -1435,84 +1520,119 @@ export default function Home() {
                       isSupported
                         ? mode === 'split'
                           ? 'Click to upload one long video'
-                          : 'Click to upload videos'
+                          : 'Click to upload clips'
                         : 'Browser not supported'
                     }
                     aria-disabled={!isSupported}
                   >
-                    <AnimatePresence initial={false} mode="wait">
-                    <motion.div
-                      key={mode}
-                      initial={{ opacity: 0, scale: 0.96, y: 5, filter: 'blur(4px)' }}
-                      animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
-                      exit={{ opacity: 0, scale: 0.98, y: -4, filter: 'blur(3px)' }}
-                      transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-                      className="flex flex-col items-center justify-center gap-4"
-                    >
-                      {mode === 'split' ? (
-                        <Scissors className="motion-icon upload-motion-icon h-10 w-10 text-muted-foreground" />
-                      ) : (
-                        <Upload className="motion-icon upload-motion-icon h-10 w-10 text-muted-foreground" />
-                      )}
+                    <div className="grid place-items-center">
+                      <AnimatePresence initial={false} mode="sync" custom={modeDirection}>
+                      <motion.div
+                        key={mode}
+                        custom={modeDirection}
+                        variants={modeGroupVariant}
+                        exit="exit"
+                        className="col-start-1 row-start-1 flex flex-col items-center justify-center gap-4"
+                      >
+                      <BlurFade
+                        duration={0.34}
+                        variant={modeRevealVariant}
+                        custom={modeDirection}
+                        exit="exit"
+                      >
+                        {mode === 'split' ? (
+                          <Scissors className="motion-icon upload-motion-icon h-10 w-10 text-muted-foreground" />
+                        ) : (
+                          <Upload className="motion-icon upload-motion-icon h-10 w-10 text-muted-foreground" />
+                        )}
+                      </BlurFade>
                       <div className="flex flex-col items-center gap-2">
-                        <p className="text-sm font-semibold text-foreground">
-                          {!isSupported
-                            ? 'Browser not supported, try Chrome'
-                            : mode === 'split'
-                              ? 'Upload one long video'
-                              : 'Upload your videos'}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {!isSupported
-                            ? 'WebCodecs API required'
-                            : mode === 'split'
-                              ? 'MP4, WebM — we’ll cut it into eased sections'
-                              : 'MP4, WebM - Select one or more videos'}
-                        </p>
+                        <BlurFade
+                          delay={0.045}
+                          duration={0.34}
+                          variant={modeRevealVariant}
+                          custom={modeDirection}
+                          exit="exit"
+                        >
+                          <p className="text-sm font-semibold text-foreground">
+                            {!isSupported
+                              ? 'Browser not supported, try Chrome'
+                              : mode === 'split'
+                                ? 'Upload one long video'
+                                : 'Upload your clips'}
+                          </p>
+                        </BlurFade>
+                        <BlurFade
+                          delay={0.09}
+                          duration={0.34}
+                          variant={modeRevealVariant}
+                          custom={modeDirection}
+                          exit="exit"
+                        >
+                          <p className="text-xs text-muted-foreground">
+                            {!isSupported
+                              ? 'WebCodecs API required'
+                              : mode === 'split'
+                                ? 'MP4, WebM — we’ll cut it into eased clips'
+                                : 'MP4, WebM — select one or more clips'}
+                          </p>
+                        </BlurFade>
                       </div>
-                    </motion.div>
-                    </AnimatePresence>
-                  </div>
+                      </motion.div>
+                      </AnimatePresence>
+                    </div>
+                    </div>
+                  </BlurFade>
 
                   <AnimatePresence initial={false}>
                     {uploadError && (
                       <motion.p
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -4 }}
+                        initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                        animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                        exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
                         className="text-center text-sm text-destructive"
                       >
                         {uploadError}
                       </motion.p>
                     )}
                   </AnimatePresence>
-                  <motion.p
-                    key={mode}
-                    initial={{ opacity: 0, y: 3 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className="text-center text-xs text-pretty text-muted-foreground"
-                  >
-                    {mode === 'split'
-                      ? 'Chop one long clip into equal sections and ease each one — great for beat-synced loops.'
-                      : 'Combine several short clips into a single eased loop.'}
-                  </motion.p>
-                </div>
-              </BlurFade>
+                  <div className="grid place-items-center">
+                    <AnimatePresence initial={false} mode="sync" custom={modeDirection}>
+                      <BlurFade
+                        key={mode}
+                        delay={0.135}
+                      duration={0.34}
+                        variant={modeRevealVariant}
+                        custom={modeDirection}
+                        exit="exit"
+                        className="col-start-1 row-start-1 text-center text-xs text-pretty text-muted-foreground"
+                      >
+                        {mode === 'split'
+                          ? 'Chop one long video into equal clips and ease each one — great for beat-synced loops.'
+                          : 'Combine several short clips into a single eased loop.'}
+                      </BlurFade>
+                    </AnimatePresence>
+                  </div>
+              </motion.div>
             )}
 
 
-            {/* Uploaded Videos Preview */}
+            {/* Uploaded clips preview */}
             {uploadedVideos.length > 0 && (
-              <BlurFade key="queue" delay={0.04} className="w-full">
-                <div className="w-full space-y-6">
+              <BlurFade
+                key="queue"
+                delay={0.04}
+                className="mx-auto w-full sm:max-w-[calc(100%_-_5rem)]"
+              >
+                <div className="w-full space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold text-balance">
-                      Uploaded Videos ({uploadedVideos.length})
+                      Uploaded Clips ({uploadedVideos.length})
                     </h3>
                     <Button
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
+                      className="border border-border/80 bg-secondary text-foreground shadow-sm hover:border-border hover:bg-accent hover:shadow-md"
                       onClick={() => {
                         setUploadedVideos([]);
                         setTransitionVideos((prev) => {
@@ -1531,8 +1651,8 @@ export default function Home() {
                     </Button>
                   </div>
 
-                  {/* Videos List with Reordering */}
-                  <motion.div layout className="space-y-3">
+                  {/* Clips list with reordering */}
+                  <motion.div layout={!shouldReduceMotion} className="space-y-2">
                     <AnimatePresence initial={false} mode="popLayout">
                     {transitionVideos.map((video, index) => {
                       const isDragging = draggingVideoIndex === index;
@@ -1586,16 +1706,28 @@ export default function Home() {
 
                       return (
                         <motion.div
-                          layout
+                          layout={!shouldReduceMotion}
                           key={video.id}
-                          initial={{ opacity: 0, y: 10, scale: 0.985, filter: 'blur(3px)' }}
-                          animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
-                          exit={{ opacity: 0, y: -6, scale: 0.985, filter: 'blur(2px)' }}
+                          initial={
+                            shouldReduceMotion
+                              ? { opacity: 0, filter: 'blur(2px)' }
+                              : { opacity: 0, y: 10, scale: 0.985, filter: 'blur(3px)' }
+                          }
+                          animate={
+                            shouldReduceMotion
+                              ? { opacity: 1, filter: 'blur(0px)' }
+                              : { opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }
+                          }
+                          exit={
+                            shouldReduceMotion
+                              ? { opacity: 0, filter: 'blur(2px)' }
+                              : { opacity: 0, y: -6, scale: 0.985, filter: 'blur(2px)' }
+                          }
                           transition={{ type: 'spring', duration: 0.34, bounce: 0 }}
                         >
                           <div
                             className={cn(
-                              'landing-surface flex items-center gap-3 rounded-xl border border-border/70 bg-secondary/50 p-4 transition-[background-color,box-shadow,transform] duration-200 ease-out',
+                              'landing-surface grid grid-cols-[2rem_minmax(0,1fr)_2.5rem] items-center gap-1 rounded-lg border border-border/70 bg-secondary/50 p-1 transition-[background-color,box-shadow,transform] duration-200 ease-out',
                               isDragging && 'scale-[0.99] ring-2 ring-primary/40 bg-secondary shadow-xl'
                             )}
                             onDragOver={handleVideoDragOver(index)}
@@ -1605,7 +1737,7 @@ export default function Home() {
 
                             <button
                               type="button"
-                              className="flex h-10 w-10 items-center justify-center rounded-md border border-dashed border-border/70 text-muted-foreground transition-[color,background-color,scale] duration-150 hover:bg-accent hover:text-foreground active:scale-[0.96] focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary cursor-grab"
+                              className="relative flex h-10 w-8 cursor-grab items-center justify-center rounded-md border border-dashed border-border/70 text-muted-foreground transition-[color,background-color,scale] duration-150 after:absolute after:left-1/2 after:top-1/2 after:size-10 after:-translate-x-1/2 after:-translate-y-1/2 after:content-[''] hover:bg-accent hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                               draggable
                               onDragStart={handleVideoDragStart(index)}
                               onDragEnd={handleVideoDragEnd}
@@ -1614,42 +1746,49 @@ export default function Home() {
                               <GripVertical className="h-4 w-4" />
                             </button>
 
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="text-primary hover:bg-primary/10 disabled:text-muted-foreground"
-                              onClick={() => handlePlayTransitionVideo(video)}
-                              disabled={!video.url || video.loading}
-                            >
-                              <PlayCircle className="h-5 w-5" />
-                            </Button>
-
-                            <div className="flex-1 min-w-0 flex items-center gap-3">
-                              {video.url && (
-                                <video
-                                  src={video.url}
-                                  className="h-12 w-16 rounded-md object-cover flex-shrink-0 bg-secondary"
-                                />
-                              )}
-                              <div className="flex-1 min-w-0">
+                            <div className="flex min-w-0 items-center gap-3 pr-1.5">
+                              <button
+                                type="button"
+                                className="group/preview relative h-10 w-[3.625rem] shrink-0 rounded-md text-white transition-[scale,filter] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                                onClick={() => handlePlayTransitionVideo(video)}
+                                disabled={!video.url || video.loading}
+                                aria-label={`Preview ${video.name}`}
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="absolute left-0 top-1/2 h-[38px] w-full -translate-y-1/2 overflow-hidden rounded-md bg-secondary outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
+                                >
+                                  {video.url && (
+                                    <video
+                                      src={video.url}
+                                      className="absolute inset-0 size-full object-cover"
+                                    />
+                                  )}
+                                  <span className="absolute inset-0 bg-black/20 transition-[background-color] duration-150 group-hover/preview:bg-black/35" />
+                                  <PlayCircle className="absolute left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 drop-shadow-sm" />
+                                </span>
+                              </button>
+                              <div className="min-w-0 flex-1">
                                 <p className="font-medium text-sm truncate">
                                   {index + 1}. {video.name}
                                 </p>
-                                <p className={cn('text-xs mt-1', statusColor)}>{statusText}</p>
-                                {encodeStatusText && (
-                                  <p className={cn('text-xs mt-0.5', encodeStatusClass)}>
-                                    {encodeStatusText}
-                                  </p>
-                                )}
+                                <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                                  <p className={cn('text-xs', statusColor)}>{statusText}</p>
+                                  {encodeStatusText && (
+                                    <p className={cn('min-w-0 truncate text-xs', encodeStatusClass)}>
+                                      {encodeStatusText}
+                                    </p>
+                                  )}
+                                </div>
                               </div>
                             </div>
 
                             <Button
                               type="button"
                               variant="ghost"
-                              size="icon"
+                              size="icon-lg"
                               className="text-muted-foreground hover:text-foreground hover:bg-secondary/80"
+                              aria-label={`Remove ${video.name}`}
                               onClick={() => {
                                 setTransitionVideos((prev) => {
                                   const target = prev.find((v) => v.id === video.id);
@@ -1658,7 +1797,12 @@ export default function Home() {
                                   }
                                   return prev.filter((v) => v.id !== video.id);
                                 });
-                                setUploadedVideos((prev) => prev.filter((f) => f.name !== video.name));
+                                setUploadedVideos((prev) => {
+                                  const fileIndex = prev.findIndex((file) => file === video.file);
+                                  return fileIndex < 0
+                                    ? prev
+                                    : prev.filter((_, index) => index !== fileIndex);
+                                });
                               }}
                             >
                               <Trash2 className="h-4 w-4" />
@@ -1666,7 +1810,7 @@ export default function Home() {
                           </div>
                           {dropIndicatorIndex === index && (
                             <motion.div
-                              layoutId="video-drop-indicator"
+                              layoutId={shouldReduceMotion ? undefined : 'video-drop-indicator'}
                               className="h-0.5 bg-primary mt-2 mb-1 shadow-[0_0_12px_var(--primary)]"
                             />
                           )}
@@ -1676,7 +1820,7 @@ export default function Home() {
                     </AnimatePresence>
                   </motion.div>
 
-                  {/* Finalize Button for Uploaded Videos */}
+                  {/* Finalize button for uploaded clips */}
                   {transitionVideos.every((v) => v.url && !v.loading) && !isFinalizingVideo && (
                     <div className="space-y-3">
                       <div className="flex flex-col items-center gap-3">
@@ -1732,27 +1876,11 @@ export default function Home() {
 
                   {/* Finalization Progress */}
                   {isFinalizingVideo && (
-                    <div className="w-full space-y-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-semibold text-foreground">
-                          {finalizationMessage}
-                        </p>
-                        <span className="text-sm tabular-nums text-muted-foreground">
-                          {Math.round(finalizationProgress)}%
-                        </span>
-                      </div>
-                      <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
-                        <div
-                          className="bg-primary h-full transition-[width] duration-300"
-                          style={{ width: `${finalizationProgress}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-end">
-                        <Button variant="outline" size="sm" onClick={handleCancelFinalize}>
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
+                    <FinalizationProgressStatus
+                      message={finalizationMessage}
+                      progress={finalizationProgress}
+                      onCancel={handleCancelFinalize}
+                    />
                   )}
                 </div>
               </BlurFade>
@@ -1792,13 +1920,12 @@ export default function Home() {
     {/* Site credit — landing only, so the editors get the full viewport. */}
     {!(finalVideo || splitSource) && (
       <footer
-        className="border-t border-border/50 px-6 py-4 text-[11px] text-muted-foreground tracking-wide"
-        style={{ fontFamily: 'var(--font-dm-mono)' }}
+        className="border-t border-border/50 px-6 py-4 font-mono text-[11px] tracking-wide text-muted-foreground"
       >
         By Willie —{' '}
         <a
           href="https://github.com/shrimbly/easy-peasy-ease"
-          className="inline-block underline transition-[color,transform] duration-150 hover:-translate-y-px hover:text-foreground focus-visible:text-foreground"
+          className="landing-footer-link inline-block underline transition-[color,transform] duration-150 hover:text-foreground focus-visible:text-foreground"
           target="_blank"
           rel="noreferrer"
         >
@@ -1807,7 +1934,7 @@ export default function Home() {
         —{' '}
         <a
           href="https://x.com/ReflctWillie"
-          className="inline-block underline transition-[color,transform] duration-150 hover:-translate-y-px hover:text-foreground focus-visible:text-foreground"
+          className="landing-footer-link inline-block underline transition-[color,transform] duration-150 hover:text-foreground focus-visible:text-foreground"
           target="_blank"
           rel="noreferrer"
         >

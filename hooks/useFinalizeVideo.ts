@@ -16,7 +16,7 @@ import { DEFAULT_OUTPUT_DURATION, DEFAULT_EASING } from '@/lib/speed-curve-confi
 import { createBezierEasing, resolveEasing, type EasingFunction } from '@/lib/easing-functions';
 import { isAbortError } from '@/lib/abort-utils';
 
-interface FinalizeProgress {
+export interface FinalizeProgress {
   stage: 'idle' | 'applying-curves' | 'mixing-audio' | 'stitching' | 'remuxing' | 'complete' | 'error';
   message: string;
   progress: number; // 0-100

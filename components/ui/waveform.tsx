@@ -11,6 +11,11 @@ import {
 
 import { cn } from "@/lib/utils"
 
+const DEFAULT_SCRUBBER_DATA = Array.from({ length: 100 }, (_, index) => {
+  const sample = Math.sin(index * 12.9898) * 43758.5453
+  return 0.2 + (sample - Math.floor(sample)) * 0.6
+})
+
 export type WaveformProps = HTMLAttributes<HTMLDivElement> & {
   data?: number[]
   barWidth?: number
@@ -193,7 +198,7 @@ export const ScrollingWaveform = ({
   const barsRef = useRef<Array<{ x: number; height: number }>>([])
   const animationRef = useRef<number>(0)
   const lastTimeRef = useRef<number>(0)
-  const seedRef = useRef(Math.random())
+  const seedRef = useRef<number | null>(null)
   const dataIndexRef = useRef(0)
   const heightStyle = typeof height === "number" ? `${height}px` : height
 
@@ -201,6 +206,10 @@ export const ScrollingWaveform = ({
     const canvas = canvasRef.current
     const container = containerRef.current
     if (!canvas || !container) return
+    if (seedRef.current === null) {
+      seedRef.current = Math.random()
+    }
+    const seed = seedRef.current
 
     const resizeObserver = new ResizeObserver(() => {
       const rect = container.getBoundingClientRect()
@@ -221,7 +230,7 @@ export const ScrollingWaveform = ({
         let currentX = rect.width
         let index = 0
         const seededRandom = (i: number) => {
-          const x = Math.sin(seedRef.current * 10000 + i) * 10000
+          const x = Math.sin(seed * 10000 + i) * 10000
           return x - Math.floor(x)
         }
         while (currentX > -step) {
@@ -283,7 +292,8 @@ export const ScrollingWaveform = ({
           const time = Date.now() / 1000
           const uniqueIndex = barsRef.current.length + time * 0.01
           const seededRandom = (index: number) => {
-            const x = Math.sin(seedRef.current * 10000 + index * 137.5) * 10000
+            const seed = seedRef.current ?? 0.5
+            const x = Math.sin(seed * 10000 + index * 137.5) * 10000
             return x - Math.floor(x)
           }
           const wave1 = Math.sin(uniqueIndex * 0.1) * 0.2
@@ -376,7 +386,10 @@ export const ScrollingWaveform = ({
   )
 }
 
-export type AudioScrubberProps = WaveformProps & {
+export type AudioScrubberProps = Omit<
+  WaveformProps,
+  "active" | "onBarClick"
+> & {
   currentTime?: number
   duration?: number
   onSeek?: (time: number) => void
@@ -394,28 +407,27 @@ export const AudioScrubber = ({
   barGap = 1,
   barRadius = 1,
   barColor,
+  fadeEdges = false,
+  fadeWidth = 24,
   height = 128,
   className,
-  fadeEdges: _fadeEdges,
-  fadeWidth: _fadeWidth,
-  active: _active,
-  onBarClick: _onBarClick,
+  onKeyDown: onKeyDownProp,
+  onMouseDown: onMouseDownProp,
   ...props
 }: AudioScrubberProps) => {
   const [isDragging, setIsDragging] = useState(false)
-  const [localProgress, setLocalProgress] = useState(0)
+  const [dragProgress, setDragProgress] = useState<number | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const waveformData =
-    data.length > 0
-      ? data
-      : Array.from({ length: 100 }, () => 0.2 + Math.random() * 0.6)
-
-  useEffect(() => {
-    if (!isDragging && duration > 0) {
-      setLocalProgress(currentTime / duration)
-    }
-  }, [currentTime, duration, isDragging])
+  const waveformData = data.length > 0 ? data : DEFAULT_SCRUBBER_DATA
+  const effectiveDuration = Math.max(0, duration)
+  const clampedCurrentTime = Math.max(
+    0,
+    Math.min(effectiveDuration, currentTime)
+  )
+  const localProgress =
+    dragProgress ??
+    (effectiveDuration > 0 ? clampedCurrentTime / effectiveDuration : 0)
 
   const handleScrub = useCallback(
     (clientX: number) => {
@@ -425,18 +437,45 @@ export const AudioScrubber = ({
       const rect = container.getBoundingClientRect()
       const x = Math.max(0, Math.min(clientX - rect.left, rect.width))
       const progress = x / rect.width
-      const newTime = progress * duration
+      const newTime = progress * effectiveDuration
 
-      setLocalProgress(progress)
+      setDragProgress(progress)
       onSeek?.(newTime)
     },
-    [duration, onSeek]
+    [effectiveDuration, onSeek]
   )
 
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    onMouseDownProp?.(e)
+    if (e.defaultPrevented) return
     e.preventDefault()
     setIsDragging(true)
     handleScrub(e.clientX)
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 1 : 0.1
+    const adjustments: Record<string, number> = {
+      ArrowDown: -step,
+      ArrowLeft: -step,
+      ArrowRight: step,
+      ArrowUp: step,
+      PageDown: -step * 10,
+      PageUp: step * 10,
+    }
+
+    let nextTime: number | null = null
+    if (event.key === "Home") nextTime = 0
+    if (event.key === "End") nextTime = effectiveDuration
+    if (adjustments[event.key] !== undefined) {
+      nextTime = clampedCurrentTime + adjustments[event.key]
+    }
+
+    if (nextTime !== null) {
+      event.preventDefault()
+      onSeek?.(Math.max(0, Math.min(effectiveDuration, nextTime)))
+    }
+    onKeyDownProp?.(event)
   }
 
   useEffect(() => {
@@ -448,6 +487,7 @@ export const AudioScrubber = ({
 
     const handleMouseUp = () => {
       setIsDragging(false)
+      setDragProgress(null)
     }
 
     document.addEventListener("mousemove", handleMouseMove)
@@ -464,11 +504,12 @@ export const AudioScrubber = ({
   return (
     <div
       aria-label="Audio waveform scrubber"
-      aria-valuemax={duration}
+      aria-valuemax={effectiveDuration}
       aria-valuemin={0}
-      aria-valuenow={currentTime}
+      aria-valuenow={localProgress * effectiveDuration}
       className={cn("relative cursor-pointer select-none", className)}
       onMouseDown={handleMouseDown}
+      onKeyDown={handleKeyDown}
       ref={containerRef}
       role="slider"
       style={{ height: heightStyle }}
@@ -482,7 +523,8 @@ export const AudioScrubber = ({
         barWidth={barWidth}
         barHeight={barHeight}
         data={waveformData}
-        fadeEdges={false}
+        fadeEdges={fadeEdges}
+        fadeWidth={fadeWidth}
         height={height}
       />
 
@@ -575,6 +617,7 @@ export const MicrophoneWaveform = ({
           processingData.push(Math.max(0.05, Math.min(1, finalValue)))
         }
 
+        lastActiveDataRef.current = processingData
         setData(processingData)
         processingAnimationRef.current =
           requestAnimationFrame(animateProcessing)
@@ -588,19 +631,27 @@ export const MicrophoneWaveform = ({
         }
       }
     } else if (!active && !processing) {
-      if (data.length > 0) {
+      const idleData = lastActiveDataRef.current
+      if (idleData.length > 0) {
         let fadeProgress = 0
         const fadeToIdle = () => {
           fadeProgress += 0.03
           if (fadeProgress < 1) {
-            const fadedData = data.map((value) => value * (1 - fadeProgress))
+            const fadedData = idleData.map((value) => value * (1 - fadeProgress))
             setData(fadedData)
-            requestAnimationFrame(fadeToIdle)
+            processingAnimationRef.current = requestAnimationFrame(fadeToIdle)
           } else {
+            lastActiveDataRef.current = []
             setData([])
+            processingAnimationRef.current = null
           }
         }
-        fadeToIdle()
+        processingAnimationRef.current = requestAnimationFrame(fadeToIdle)
+        return () => {
+          if (processingAnimationRef.current) {
+            cancelAnimationFrame(processingAnimationRef.current)
+          }
+        }
       }
       return
     }
@@ -623,11 +674,16 @@ export const MicrophoneWaveform = ({
       return
     }
 
+    let cancelled = false
     const setupMicrophone = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
         })
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
         streamRef.current = stream
 
         const audioContext = new (window.AudioContext ||
@@ -675,13 +731,14 @@ export const MicrophoneWaveform = ({
 
         updateData()
       } catch (error) {
-        onError?.(error as Error)
+        if (!cancelled) onError?.(error as Error)
       }
     }
 
-    setupMicrophone()
+    void setupMicrophone()
 
     return () => {
+      cancelled = true
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop())
       }
@@ -776,14 +833,15 @@ export const LiveMicrophoneWaveform = ({
   const [internalDragOffset, setInternalDragOffset] = useState(0)
   const [isDragging, setIsDragging] = useState(false)
   const [playbackPosition, setPlaybackPosition] = useState<number | null>(null)
+  const [recordedBarCount, setRecordedBarCount] = useState(0)
   const dragStartXRef = useRef<number>(0)
   const dragStartOffsetRef = useRef<number>(0)
   const playbackStartTimeRef = useRef<number>(0)
 
   // Audio recording and playback refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
   const audioBufferRef = useRef<AudioBuffer | null>(null)
+  const recordingGenerationRef = useRef(0)
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null)
   const scrubSourceRef = useRef<AudioBufferSourceNode | null>(null)
 
@@ -792,6 +850,38 @@ export const LiveMicrophoneWaveform = ({
   const setDragOffset = externalSetDragOffset ?? setInternalDragOffset
 
   const heightStyle = typeof height === "number" ? `${height}px` : height
+
+  const processAudioBlob = useCallback(async (blob: Blob, generation: number) => {
+    try {
+      if (generation !== recordingGenerationRef.current) return
+      const audioContext = audioContextRef.current
+      if (!audioContext) return
+
+      const arrayBuffer = await blob.arrayBuffer()
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+      if (
+        generation === recordingGenerationRef.current &&
+        audioContext === audioContextRef.current
+      ) {
+        audioBufferRef.current = audioBuffer
+      }
+    } catch (error) {
+      console.error("Error processing audio:", error)
+    }
+  }, [])
+
+  useEffect(() => {
+    const animationId = requestAnimationFrame(() => {
+      setRecordedBarCount(historyRef.current.length)
+    })
+    return () => cancelAnimationFrame(animationId)
+  }, [active, historyRef])
+
+  // `savedHistoryRef` is an explicitly mutable storage API: consumers can keep
+  // the recording history across mounts without making every audio frame render.
+  useEffect(() => {
+    if (active) historyRef.current = []
+  }, [active, historyRef])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -828,27 +918,28 @@ export const LiveMicrophoneWaveform = ({
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop())
       }
-      // Process recorded audio when stopping
-      if (enableAudioPlayback && audioChunksRef.current.length > 0) {
-        const audioBlob = new Blob(audioChunksRef.current, {
-          type: "audio/webm",
-        })
-        processAudioBlob(audioBlob)
-      }
       return
     }
 
     setDragOffset?.(0)
-    historyRef.current = []
-    audioChunksRef.current = []
+    recordingGenerationRef.current += 1
+    const recordingGeneration = recordingGenerationRef.current
+    const recordingChunks: Blob[] = []
     audioBufferRef.current = null
-    setPlaybackPosition(null)
+    const playbackResetFrame = requestAnimationFrame(() => {
+      setPlaybackPosition(null)
+    })
 
+    let cancelled = false
     const setupMicrophone = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
         })
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
         streamRef.current = stream
 
         const audioContext = new (window.AudioContext ||
@@ -870,8 +961,15 @@ export const LiveMicrophoneWaveform = ({
 
           mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
-              audioChunksRef.current.push(event.data)
+              recordingChunks.push(event.data)
             }
+          }
+          mediaRecorder.onstop = () => {
+            if (recordingChunks.length === 0) return
+            const audioBlob = new Blob(recordingChunks, {
+              type: mediaRecorder.mimeType || "audio/webm",
+            })
+            void processAudioBlob(audioBlob, recordingGeneration)
           }
 
           mediaRecorder.start(100)
@@ -881,9 +979,11 @@ export const LiveMicrophoneWaveform = ({
       }
     }
 
-    setupMicrophone()
+    void setupMicrophone()
 
     return () => {
+      cancelled = true
+      cancelAnimationFrame(playbackResetFrame)
       if (
         mediaRecorderRef.current &&
         mediaRecorderRef.current.state !== "inactive"
@@ -908,20 +1008,8 @@ export const LiveMicrophoneWaveform = ({
     setDragOffset,
     enableAudioPlayback,
     historyRef,
+    processAudioBlob,
   ])
-
-  const processAudioBlob = async (blob: Blob) => {
-    try {
-      const arrayBuffer = await blob.arrayBuffer()
-      if (audioContextRef.current) {
-        const audioBuffer =
-          await audioContextRef.current.decodeAudioData(arrayBuffer)
-        audioBufferRef.current = audioBuffer
-      }
-    } catch (error) {
-      console.error("Error processing audio:", error)
-    }
-  }
 
   const playScrubSound = useCallback(
     (position: number, direction: number) => {
@@ -1093,6 +1181,7 @@ export const LiveMicrophoneWaveform = ({
           if (historyRef.current.length > historySize) {
             historyRef.current.shift()
           }
+          setRecordedBarCount(historyRef.current.length)
         }
       }
 
@@ -1301,33 +1390,27 @@ export const LiveMicrophoneWaveform = ({
     historyRef,
   ])
 
+  const canScrub = !active && recordedBarCount > 0
+  const scrubbedBarCount = Math.min(
+    recordedBarCount,
+    Math.floor(Math.abs(dragOffset) / (barWidth + barGap))
+  )
+
   return (
     <div
       className={cn(
         "relative flex items-center",
-        !active && historyRef.current.length > 0 && "cursor-pointer",
+        canScrub && "cursor-pointer",
         className
       )}
       onMouseDown={handleMouseDown}
       ref={containerRef}
-      role={!active && historyRef.current.length > 0 ? "slider" : undefined}
-      aria-label={
-        !active && historyRef.current.length > 0
-          ? "Drag to scrub through recording"
-          : undefined
-      }
-      aria-valuenow={
-        !active && historyRef.current.length > 0
-          ? Math.abs(dragOffset)
-          : undefined
-      }
-      aria-valuemin={!active && historyRef.current.length > 0 ? 0 : undefined}
-      aria-valuemax={
-        !active && historyRef.current.length > 0
-          ? historyRef.current.length
-          : undefined
-      }
-      tabIndex={!active && historyRef.current.length > 0 ? 0 : undefined}
+      role={canScrub ? "slider" : undefined}
+      aria-label={canScrub ? "Drag to scrub through recording" : undefined}
+      aria-valuenow={canScrub ? scrubbedBarCount : undefined}
+      aria-valuemin={canScrub ? 0 : undefined}
+      aria-valuemax={canScrub ? recordedBarCount : undefined}
+      tabIndex={canScrub ? 0 : undefined}
       style={{ height: heightStyle }}
       {...props}
     >

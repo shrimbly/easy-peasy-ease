@@ -61,3 +61,40 @@ export function getVideoPreviewTransform(
 
   return `rotate(${rotationDegrees}deg) scale(${scale})`;
 }
+
+export function getGeneratedVideoPreviewTransform({
+  expectedWidth,
+  expectedHeight,
+  trackRotation,
+}: Pick<
+  VideoPreviewOrientation,
+  'expectedWidth' | 'expectedHeight' | 'trackRotation'
+>): string {
+  if (
+    !expectedWidth ||
+    !expectedHeight ||
+    expectedWidth <= 0 ||
+    expectedHeight <= 0
+  ) {
+    return 'none';
+  }
+
+  const rotationDegrees =
+    trackRotation === 90
+      ? -90
+      : trackRotation === 180
+        ? 180
+        : trackRotation === 270
+          ? 90
+          : 0;
+  if (rotationDegrees === 0) return 'none';
+
+  if (rotationDegrees === 180) return 'rotate(180deg)';
+
+  const scale = Math.max(
+    expectedWidth / expectedHeight,
+    expectedHeight / expectedWidth
+  );
+
+  return `rotate(${rotationDegrees}deg) scale(${scale})`;
+}

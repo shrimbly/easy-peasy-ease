@@ -36,6 +36,8 @@ interface AudioWaveformVisualizationProps {
   isBeatUpdating?: boolean;
 }
 
+const AUDIO_TRACK_HEIGHT = 48;
+
 const positiveModulo = (value: number, modulus: number): number => {
   const result = value % modulus;
   return result < 0 ? result + modulus : result;
@@ -249,7 +251,7 @@ export function AudioWaveformVisualization({
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
         className={cn(
-          'relative rounded-lg border border-border bg-secondary/20 overflow-hidden transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+          'relative overflow-hidden rounded-md border border-border bg-secondary/20 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
           onSelect && !onOffsetChange && 'cursor-pointer',
           onOffsetChange && !isDragging && 'cursor-grab',
           isDragging && 'cursor-grabbing',
@@ -262,6 +264,7 @@ export function AudioWaveformVisualization({
             type="button"
             variant="ghost"
             size="icon"
+            aria-label={`Remove ${fileName} audio track`}
             className="absolute right-2 top-2 z-10 text-muted-foreground hover:text-foreground hover:bg-secondary/80"
             // pointerdown must not reach the track: its drag handler captures
             // the pointer, which retargets the click away from this button.
@@ -275,7 +278,7 @@ export function AudioWaveformVisualization({
             <Trash2 className="h-4 w-4" />
           </Button>
         )}
-        <div className="flex h-[96px]">
+        <div className="flex h-12">
           {/* Silence/gap at the start when offset > 0 */}
           {silenceWidthPixels > 0 && (
             <div
@@ -290,13 +293,13 @@ export function AudioWaveformVisualization({
                 data={visiblePeaks}
                 currentTime={Math.max(0, currentTime - silenceAtStart)}
                 duration={Math.max(0, timelineDuration - silenceAtStart)}
-                height={96}
+                height={AUDIO_TRACK_HEIGHT}
                 barWidth={3}
                 barGap={1}
                 barRadius={2}
                 showHandle={false}
                 fadeEdges={false}
-                className="bg-secondary/50 [--foreground:oklch(0.951_0.121_125.737)]"
+                className="bg-secondary/50 [--foreground:var(--primary)]"
                 aria-label={`${fileName} waveform`}
               />
             </div>

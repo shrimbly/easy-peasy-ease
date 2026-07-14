@@ -2,7 +2,7 @@
 
 import { ChangeEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FinalVideo, TransitionVideo, AudioProcessingOptions, RenderQuality, UpdateReason } from '@/lib/types';
-import { Label } from '@/components/ui/label';
+import { FieldLabel } from '@/components/ui/field-label';
 import { CubicBezierEditor } from '@/components/CubicBezierEditor';
 import { Button } from '@/components/ui/button';
 import {
@@ -33,16 +33,20 @@ import {
   type BeatSubdivision,
 } from '@/lib/beat-sync';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { RangeSlider } from '@/components/ui/range-slider';
+import { ScrubbableNumberField } from '@/components/ui/scrubbable-number-field';
 import { EasingCurvePicker } from '@/components/ui/easing-curve-picker';
 import {
+  SegmentedControlIndicator,
+  segmentedControlClassName,
+  segmentedControlItemClassName,
+} from '@/components/ui/segmented-control';
+import {
+  getGeneratedVideoPreviewTransform,
   getVideoPreviewAspectRatio,
-  getVideoPreviewTransform,
 } from '@/lib/video-preview';
 
 const LOOP_OPTIONS = [1, 2, 3] as const;
 const BEZIER_THROTTLE_MS = 75;
-
 interface FinalVideoEditorProps {
   finalVideo: FinalVideo;
   segments: TransitionVideo[];
@@ -91,14 +95,15 @@ function FinalVideoEditorComponent({
   onRenderQualityChange,
   currentRenderQuality,
 }: FinalVideoEditorProps) {
-  const selectedSegment = useMemo(
-    () => segments.find((segment) => segment.id === selectedSegmentId) ?? null,
+  const selectedSegmentIndex = useMemo(
+    () => segments.findIndex((segment) => segment.id === selectedSegmentId),
     [segments, selectedSegmentId]
   );
+  const selectedSegment = selectedSegmentIndex >= 0 ? segments[selectedSegmentIndex] : null;
   // Which update CTA was pressed last — used to place the busy spinner.
   const [updateScope, setUpdateScope] = useState<'section' | 'all'>('all');
   const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [inspectorView, setInspectorView] = useState<'segments' | 'audio' | 'export'>('segments');
+  const [inspectorView, setInspectorView] = useState<'segments' | 'audio'>('segments');
   const [audioSettings, setAudioSettings] = useState<AudioProcessingOptions>({
     fadeIn: 0.5,
     fadeOut: 0.5,
@@ -116,7 +121,10 @@ function FinalVideoEditorComponent({
   const prevAudioFileRef = useRef<File | null>(null);
   const prevAudioSettingsRef = useRef<AudioProcessingOptions>({ fadeIn: 0.5, fadeOut: 0.5, offset: 0 });
   const audioFileChangedRef = useRef(false);
-  const [localCurve, setLocalCurve] = useState<[number, number, number, number] | null>(null);
+  const [localCurve, setLocalCurve] = useState<{
+    segmentId: number;
+    value: [number, number, number, number];
+  } | null>(null);
   const bezierPendingRef = useRef<{
     segmentId: number;
     bezier: [number, number, number, number];
@@ -267,28 +275,13 @@ function FinalVideoEditorComponent({
     return defaultBezier;
   }, [defaultBezier, selectedSegment]);
 
-  useEffect(() => {
-    setLocalCurve(null);
-  }, [selectedSegmentId]);
-
-  useEffect(() => {
-    if (!localCurve) return;
-    const isMatching =
-      Math.abs(localCurve[0] - baseCurveValue[0]) < 1e-4 &&
-      Math.abs(localCurve[1] - baseCurveValue[1]) < 1e-4 &&
-      Math.abs(localCurve[2] - baseCurveValue[2]) < 1e-4 &&
-      Math.abs(localCurve[3] - baseCurveValue[3]) < 1e-4;
-    if (isMatching) {
-      setLocalCurve(null);
-    }
-  }, [baseCurveValue, localCurve]);
-
-  const curveValue = localCurve ?? baseCurveValue;
+  const curveValue =
+    localCurve?.segmentId === selectedSegmentId ? localCurve.value : baseCurveValue;
 
   const handleBezierChange = useCallback(
     (nextValue: [number, number, number, number]) => {
       if (!selectedSegment) return;
-      setLocalCurve(nextValue);
+      setLocalCurve({ segmentId: selectedSegment.id, value: nextValue });
       scheduleBezierChange(selectedSegment.id, nextValue, false);
     },
     [scheduleBezierChange, selectedSegment]
@@ -297,7 +290,7 @@ function FinalVideoEditorComponent({
   const handleBezierCommit = useCallback(
     (finalValue: [number, number, number, number]) => {
       if (!selectedSegment) return;
-      setLocalCurve(finalValue);
+      setLocalCurve({ segmentId: selectedSegment.id, value: finalValue });
       flushPendingBezier({
         segmentId: selectedSegment.id,
         bezier: finalValue,
@@ -309,10 +302,20 @@ function FinalVideoEditorComponent({
 
   const handleSegmentSelect = useCallback(
     (segmentId: number) => {
+      setLocalCurve(null);
       setInspectorView('segments');
       onSelectSegment(segmentId);
     },
     [onSelectSegment]
+  );
+
+  const handlePresetChange = useCallback(
+    (preset: string) => {
+      if (!selectedSegment) return;
+      setLocalCurve(null);
+      onPresetChange(selectedSegment.id, preset);
+    },
+    [onPresetChange, selectedSegment]
   );
 
   // Video playback control
@@ -482,8 +485,11 @@ function FinalVideoEditorComponent({
   // Trigger download when full quality render completes
   useEffect(() => {
     if (pendingFullQualityDownload && !isUpdating && currentRenderQuality === 'full') {
-      setPendingFullQualityDownload(false);
-      onDownload();
+      const timeoutId = window.setTimeout(() => {
+        setPendingFullQualityDownload(false);
+        onDownload();
+      }, 0);
+      return () => window.clearTimeout(timeoutId);
     }
   }, [pendingFullQualityDownload, isUpdating, currentRenderQuality, onDownload]);
 
@@ -513,14 +519,14 @@ function FinalVideoEditorComponent({
   // Render Components
   const downloadButtonLabel = pendingFullQualityDownload ? 'Rendering…' : 'Download';
 
-  const ExportButtons = (
+  const VideoSidebarActions = (
     <div className="flex gap-2">
       <Button onClick={onExit} variant="outline" className="flex-1" disabled={isUpdating}>
         Exit
       </Button>
       <Button
         onClick={handleDownload}
-        className="flex-1 gap-2 bg-white text-neutral-950 hover:bg-white/90"
+        className="flex-1 gap-2"
         disabled={isUpdating}
       >
         {isUpdating && pendingFullQualityDownload ? (
@@ -534,71 +540,58 @@ function FinalVideoEditorComponent({
   );
 
   const AudioSettingsContent = (
-    <div className="space-y-4 sm:space-y-6">
+    <div className="space-y-4">
       <div>
-        <h4 className="text-xl lg:text-2xl font-bold text-foreground">Audio Settings</h4>
+        <h4 className="text-lg font-semibold text-foreground">Audio Settings</h4>
         <p className="hidden sm:block text-xs text-muted-foreground">
           Shape fade envelopes and looping for the background track.
         </p>
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="audio-fade-in">Fade in (sec)</Label>
-        <div className="flex items-center gap-3">
-          <RangeSlider
+      <div className="grid grid-cols-2 gap-3">
+        <div className="min-w-0 space-y-1.5">
+          <FieldLabel htmlFor="audio-fade-in">Fade in</FieldLabel>
+          <ScrubbableNumberField
             id="audio-fade-in"
+            label="Audio fade in"
             min={0}
             max={10}
             step={0.1}
+            scrubStep={0.05}
+            precision={1}
+            unit="seconds"
             value={audioSettings.fadeIn}
-            onChange={(event) => updateAudioSetting('fadeIn', Number(event.target.value))}
-            className="flex-1"
-          />
-          <input
-            type="number"
-            min={0}
-            max={10}
-            step={0.1}
-            value={audioSettings.fadeIn}
-            onChange={(event) => updateAudioSetting('fadeIn', Number(event.target.value))}
-            className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
+            onChange={(value) => updateAudioSetting('fadeIn', value)}
+            disabled={isUpdating}
+            className="w-full"
           />
         </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="audio-fade-out">Fade out (sec)</Label>
-        <div className="flex items-center gap-3">
-          <RangeSlider
+        <div className="min-w-0 space-y-1.5">
+          <FieldLabel htmlFor="audio-fade-out">Fade out</FieldLabel>
+          <ScrubbableNumberField
             id="audio-fade-out"
+            label="Audio fade out"
             min={0}
             max={10}
             step={0.1}
+            scrubStep={0.05}
+            precision={1}
+            unit="seconds"
             value={audioSettings.fadeOut}
-            onChange={(event) => updateAudioSetting('fadeOut', Number(event.target.value))}
-            className="flex-1"
-          />
-          <input
-            type="number"
-            min={0}
-            max={10}
-            step={0.1}
-            value={audioSettings.fadeOut}
-            onChange={(event) => updateAudioSetting('fadeOut', Number(event.target.value))}
-            className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
+            onChange={(value) => updateAudioSetting('fadeOut', value)}
+            disabled={isUpdating}
+            className="w-full"
           />
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <label htmlFor="audio-update-quality" className="text-sm text-muted-foreground whitespace-nowrap">
-          Quality:
-        </label>
+      <div className="space-y-1.5">
+        <FieldLabel htmlFor="audio-update-quality">Quality</FieldLabel>
         <select
           id="audio-update-quality"
           value={renderQuality}
           onChange={(e) => onRenderQualityChange(e.target.value as RenderQuality)}
-          className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
+          className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           <option value="full">Full Quality</option>
           <option value="preview">Preview (720p)</option>
@@ -617,66 +610,70 @@ function FinalVideoEditorComponent({
   );
 
   const SegmentSettingsContent = selectedSegment ? (
-    <>
-      <div>
-        <div className="flex items-center gap-3">
-          <h4 className="text-xl lg:text-2xl font-bold text-foreground">{selectedSegment.name}</h4>
+    <div className="flex h-full flex-col gap-3 sm:gap-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
+          <h4 className="text-lg font-semibold text-foreground">
+            Clip {selectedSegmentIndex + 1}
+          </h4>
           {selectedSegment.loopIteration && selectedSegment.loopIteration > 1 && (
             <span className="rounded-full border border-border/70 bg-background px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Loop {selectedSegment.loopIteration}
             </span>
           )}
         </div>
-        <p className="hidden sm:block text-xs text-muted-foreground">Fine-tune duration and easing curve.</p>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="segment-duration">Duration (sec)</Label>
-        <div className="flex items-center gap-3">
-          <RangeSlider
-            id="segment-duration"
-            // Snapped values can leave 0.5–6; widen so the DOM never clamps
-            // (a pinned thumb would misreport and re-clamp on first keypress).
-            min={Math.min(0.5, selectedSegment.duration ?? 1.5)}
-            max={Math.max(6, selectedSegment.duration ?? 1.5)}
-            step={0.01}
-            value={selectedSegment.duration ?? 1.5}
-            onChange={(event) =>
-              handleManualDurationChange(selectedSegment.id, Number(event.target.value))
-            }
-            className="flex-1"
-          />
-          <input
-            type="number"
-            min={0.1}
-            step={0.01}
-            value={(selectedSegment.duration ?? 1.5).toFixed(2)}
-            onChange={(event) =>
-              handleManualDurationChange(selectedSegment.id, Number(event.target.value))
-            }
-            className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
-          />
-        </div>
+        <p
+          className="ml-auto min-w-0 truncate text-right text-xs text-muted-foreground"
+          title={selectedSegment.name}
+        >
+          {selectedSegment.name}
+        </p>
       </div>
 
       <div className="space-y-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-        <div className="flex items-center justify-between gap-2">
-          <Label>Ease Curve</Label>
-          <EasingCurvePicker
-            id="preset-select"
-            value={selectedSegment.easingPreset ?? easingOptions[0]}
-            options={easingOptions}
-            onChange={(preset) => onPresetChange(selectedSegment.id, preset)}
-            disabled={isUpdating}
-          />
+        <div className="flex items-start gap-3">
+          <div className="shrink-0 space-y-1.5">
+            <FieldLabel
+              htmlFor="segment-duration"
+            >
+              Seconds
+            </FieldLabel>
+            <ScrubbableNumberField
+              key={selectedSegment.id}
+              id="segment-duration"
+              label="Clip duration"
+              min={0.1}
+              step={0.01}
+              scrubStep={0.01}
+              precision={2}
+              unit="seconds"
+              value={selectedSegment.duration ?? 1.5}
+              onChange={(duration) => handleManualDurationChange(selectedSegment.id, duration)}
+              disabled={isUpdating}
+              className="w-32"
+            />
+          </div>
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <FieldLabel
+              htmlFor="preset-select"
+            >
+              Curve
+            </FieldLabel>
+            <EasingCurvePicker
+              id="preset-select"
+              value={selectedSegment.easingPreset ?? easingOptions[0]}
+              options={easingOptions}
+              onChange={handlePresetChange}
+              disabled={isUpdating}
+              fullWidth
+            />
+          </div>
         </div>
-        {/* max-h = plot-square cap (sidebar inner width) + readout row, so the
-            plot never stretches past square and spare space falls below. */}
         <CubicBezierEditor
           value={curveValue}
           onChange={handleBezierChange}
           onCommit={handleBezierCommit}
-          className="lg:min-h-0 lg:flex-1 lg:max-h-[338px] xl:max-h-[378px]"
+          className="min-w-0"
         />
         <div className="flex gap-2">
           <Button
@@ -689,7 +686,7 @@ function FinalVideoEditorComponent({
             {isUpdating && updateScope === 'section' && (
               <Loader2 className="h-4 w-4 animate-spin" />
             )}
-            Update Section
+            Update Clip
           </Button>
           <Button
             size="sm"
@@ -700,7 +697,7 @@ function FinalVideoEditorComponent({
             {isUpdating && updateScope === 'all' && (
               <Loader2 className="h-4 w-4 animate-spin" />
             )}
-            Update All Sections
+            Update All Clips
           </Button>
         </div>
       </div>
@@ -716,10 +713,13 @@ function FinalVideoEditorComponent({
           Render previews in lower quality (faster)
         </label>
       </div>
-    </>
+      <div className="mt-auto border-t border-border/70 pt-3">
+        {VideoSidebarActions}
+      </div>
+    </div>
   ) : (
     <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
-      <p>Select a segment in the timeline to edit its timing and ease curve.</p>
+      <p>Select a clip in the timeline to edit its timing and ease curve.</p>
     </div>
   );
 
@@ -732,7 +732,7 @@ function FinalVideoEditorComponent({
           {/* Preview, controls bar and timeline as one connected card */}
           <div className="flex w-full flex-col shadow-xl lg:h-full lg:min-h-0">
             <div
-              className="relative flex w-full items-center justify-center overflow-hidden rounded-t-xl border border-border bg-black lg:!aspect-auto lg:flex-1 lg:min-h-0"
+              className="relative flex w-full items-center justify-center overflow-hidden rounded-t-lg border border-border bg-black lg:!aspect-auto lg:flex-1 lg:min-h-0"
               style={{ aspectRatio: previewAspectRatio }}
             >
               <video
@@ -744,15 +744,13 @@ function FinalVideoEditorComponent({
                 className="h-full w-full object-contain"
                 preload="metadata"
                 style={{ transform: activePreviewTransform }}
-                onLoadedMetadata={(event) => {
+                onLoadedMetadata={() => {
                   const firstSegment = segments[0];
                   setPreviewTransform({
                     url: finalVideo.url,
-                    value: getVideoPreviewTransform({
+                    value: getGeneratedVideoPreviewTransform({
                       expectedWidth: firstSegment?.width,
                       expectedHeight: firstSegment?.height,
-                      intrinsicWidth: event.currentTarget.videoWidth,
-                      intrinsicHeight: event.currentTarget.videoHeight,
                       trackRotation: firstSegment?.rotation,
                     }),
                   });
@@ -806,7 +804,7 @@ function FinalVideoEditorComponent({
               onSegmentSelect={handleSegmentSelect}
               zoomValue={timelineZoom}
               onZoomChange={setTimelineZoom}
-              viewportClassName="rounded-t-none rounded-b-xl"
+              viewportClassName="rounded-t-none rounded-b-lg"
               renderAudioTrack={({ trackWidth, pixelsPerSecond, totalDuration }) => (
                 <div className="space-y-1">
                   {!waveformData ? (
@@ -842,35 +840,33 @@ function FinalVideoEditorComponent({
             absolute overlay), so the row's height — and therefore the
             sidebar's — is set by the preview/timeline column. */}
         <div className="w-full lg:w-[360px] xl:w-[400px] shrink-0 lg:relative">
-        <aside className="flex flex-col rounded-xl border border-border bg-secondary p-4 lg:p-6 lg:absolute lg:inset-0">
+        <aside className="flex flex-col rounded-lg border border-border bg-secondary p-4 lg:absolute lg:inset-0">
           <Tabs
             value={inspectorView}
-            onValueChange={(v) => setInspectorView(v as 'segments' | 'audio' | 'export')}
+            onValueChange={(v) => setInspectorView(v as 'segments' | 'audio')}
             className="flex flex-col h-full w-full"
           >
-              <TabsList className="grid w-full grid-cols-3 mb-3 bg-secondary/50 p-1 rounded-xl">
-                <TabsTrigger 
-                  value="segments" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-[color,background-color,box-shadow] duration-200"
+              <TabsList className={`${segmentedControlClassName} mb-2 w-full bg-background/40`}>
+                <SegmentedControlIndicator
+                  activeIndex={inspectorView === 'segments' ? 0 : 1}
+                  className="bg-accent"
+                />
+                <TabsTrigger
+                  value="segments"
+                  className={`${segmentedControlItemClassName} data-[state=active]:text-accent-foreground`}
                 >
-                  Clip
+                  Video
                 </TabsTrigger>
-                <TabsTrigger 
-                  value="audio" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-[color,background-color,box-shadow] duration-200"
+                <TabsTrigger
+                  value="audio"
+                  className={`${segmentedControlItemClassName} data-[state=active]:text-accent-foreground`}
                 >
                   Audio
-                </TabsTrigger>
-                <TabsTrigger 
-                  value="export" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-[color,background-color,box-shadow] duration-200"
-                >
-                  Export
                 </TabsTrigger>
               </TabsList>
 
             <div className="flex-1 overflow-y-auto min-h-[400px] lg:min-h-0">
-              <TabsContent value="segments" className="mt-0 h-full space-y-3 sm:space-y-4 lg:flex lg:flex-col data-[state=inactive]:hidden">
+              <TabsContent value="segments" className="mt-0 h-full data-[state=inactive]:hidden">
                 {SegmentSettingsContent}
               </TabsContent>
 
@@ -882,13 +878,6 @@ function FinalVideoEditorComponent({
                     <p>Upload an audio track in the timeline to configure audio settings.</p>
                   </div>
                 )}
-              </TabsContent>
-
-              <TabsContent value="export" className="mt-0 h-full flex items-center justify-center data-[state=inactive]:hidden">
-                <div className="w-full space-y-4">
-                  <p className="text-center text-sm text-muted-foreground mb-4">Ready to save your loop?</p>
-                  {ExportButtons}
-                </div>
               </TabsContent>
             </div>
           </Tabs>

@@ -1,9 +1,15 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { getPresetBezier } from '@/lib/easing-presets';
+
+const POPOVER_EASE: [number, number, number, number] = [0.23, 1, 0.32, 1];
+const POPOVER_ROW_REVEAL_DURATION = 0.18;
+const POPOVER_ROW_STAGGER = 0.035;
+const CURVES_PER_ROW = 3;
 
 interface EasingCurvePickerProps {
   value: string;
@@ -65,8 +71,30 @@ export function EasingCurvePicker({
   fullWidth = false,
 }: EasingCurvePickerProps) {
   const [open, setOpen] = useState(false);
+  const popoverId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const shouldReduceMotion = useReducedMotion();
+  const selectedOptionIndex = Math.max(0, options.indexOf(value));
+  const [focusedOptionIndex, setFocusedOptionIndex] = useState(selectedOptionIndex);
+  const rovingOptionIndex =
+    options.length === 0
+      ? -1
+      : Math.max(0, Math.min(options.length - 1, focusedOptionIndex));
+  const optionRows = Array.from(
+    { length: Math.ceil(options.length / CURVES_PER_ROW) },
+    (_, rowIndex) =>
+      options.slice(rowIndex * CURVES_PER_ROW, (rowIndex + 1) * CURVES_PER_ROW)
+  );
+
+  useEffect(() => {
+    if (!open || options.length === 0) return;
+    const frameId = requestAnimationFrame(() => {
+      optionRefs.current[rovingOptionIndex]?.focus();
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [open, options.length, rovingOptionIndex]);
 
   // Close on outside interaction or Escape.
   useEffect(() => {
@@ -90,10 +118,30 @@ export function EasingCurvePicker({
     };
   }, [open]);
 
-  const selectCurve = (preset: string) => {
+  const selectCurve = (preset: string, index: number) => {
+    setFocusedOptionIndex(index);
     onChange(preset);
     setOpen(false);
     triggerRef.current?.focus();
+  };
+
+  const handleOptionKeyDown = (
+    index: number,
+    event: React.KeyboardEvent<HTMLButtonElement>
+  ) => {
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = index + 1;
+    if (event.key === 'ArrowLeft') nextIndex = index - 1;
+    if (event.key === 'ArrowDown') nextIndex = index + CURVES_PER_ROW;
+    if (event.key === 'ArrowUp') nextIndex = index - CURVES_PER_ROW;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = options.length - 1;
+    if (nextIndex === null) return;
+
+    event.preventDefault();
+    const clampedIndex = Math.max(0, Math.min(options.length - 1, nextIndex));
+    setFocusedOptionIndex(clampedIndex);
+    optionRefs.current[clampedIndex]?.focus();
   };
 
   return (
@@ -105,9 +153,10 @@ export function EasingCurvePicker({
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? popoverId : undefined}
         onClick={() => setOpen((prev) => !prev)}
         className={cn(
-          'flex items-center gap-2 rounded-md border border-border bg-background py-1.5 pl-2 pr-2.5 text-sm text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50',
+          "relative flex h-9 items-center gap-2 rounded-md border border-border bg-background py-0 pl-2 pr-2.5 text-sm text-foreground transition-colors after:absolute after:inset-x-0 after:inset-y-[-2px] after:content-[''] hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50",
           fullWidth && 'w-full'
         )}
       >
@@ -121,47 +170,123 @@ export function EasingCurvePicker({
         />
       </button>
 
-      {open && (
-        <div
-          role="listbox"
-          aria-label="Ease curves"
-          className={cn(
-            'absolute top-full z-50 mt-2 max-h-[min(60vh,420px)] w-72 overflow-y-auto rounded-xl border border-border bg-popover p-2 shadow-xl',
-            align === 'end' ? 'right-0' : 'left-0'
-          )}
-        >
-          <div className="grid grid-cols-3 gap-1.5">
-            {options.map((preset) => {
-              const selected = preset === value;
-              return (
-                <button
-                  key={preset}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => selectCurve(preset)}
-                  className={cn(
-                    'flex flex-col items-center gap-1 rounded-sm border p-2 transition-colors',
-                    selected
-                      ? 'border-primary/60 bg-primary/10'
-                      : 'border-transparent hover:bg-accent'
-                  )}
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="curve-picker-popover"
+            id={popoverId}
+            role="listbox"
+            aria-label="Ease curves"
+            initial={
+              shouldReduceMotion
+                ? { opacity: 0 }
+                : {
+                    opacity: 0,
+                    transform: 'scaleY(0.75)',
+                    filter: 'blur(4px)',
+                  }
+            }
+            animate={
+              shouldReduceMotion
+                ? { opacity: 1 }
+                : {
+                    opacity: 1,
+                    transform: 'scaleY(1)',
+                    filter: 'blur(0px)',
+                  }
+            }
+            exit={
+              shouldReduceMotion
+                ? {
+                    opacity: 0,
+                    transition: { duration: 0.12, ease: POPOVER_EASE },
+                  }
+                : {
+                    opacity: 0,
+                    transform: 'scaleY(0.9)',
+                    filter: 'blur(2px)',
+                    transition: {
+                      duration: 0.14,
+                      ease: POPOVER_EASE,
+                    },
+                  }
+            }
+            transition={{
+              duration: shouldReduceMotion ? 0.12 : 0.22,
+              ease: POPOVER_EASE,
+            }}
+            style={{ transformOrigin: align === 'end' ? 'top right' : 'top left' }}
+            className={cn(
+              'absolute top-full z-50 mt-2 max-h-[min(60vh,420px)] w-72 overflow-y-auto rounded-xl border border-border bg-popover p-2 shadow-xl',
+              align === 'end' ? 'right-0' : 'left-0'
+            )}
+          >
+            <div className="flex flex-col gap-1.5">
+              {optionRows.map((row, rowIndex) => (
+                <motion.div
+                  key={`curve-row-${row[0]}`}
+                  role="presentation"
+                  initial={
+                    shouldReduceMotion
+                      ? { opacity: 0 }
+                      : { opacity: 0, filter: 'blur(3px)' }
+                  }
+                  animate={
+                    shouldReduceMotion
+                      ? { opacity: 1 }
+                      : { opacity: 1, filter: 'blur(0px)' }
+                  }
+                  transition={{
+                    duration: shouldReduceMotion
+                      ? 0.12
+                      : POPOVER_ROW_REVEAL_DURATION,
+                    delay: shouldReduceMotion
+                      ? 0
+                      : rowIndex * POPOVER_ROW_STAGGER,
+                    ease: POPOVER_EASE,
+                  }}
+                  className="grid grid-cols-3 gap-1.5"
                 >
-                  <CurveThumb bezier={getPresetBezier(preset)} className="h-10 w-10" />
-                  <span
-                    className={cn(
-                      'text-center text-[10px] leading-tight',
-                      selected ? 'font-medium text-foreground' : 'text-muted-foreground'
-                    )}
-                  >
-                    {preset}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                  {row.map((preset, optionIndex) => {
+                    const index = rowIndex * CURVES_PER_ROW + optionIndex;
+                    const selected = preset === value;
+                    return (
+                      <button
+                        ref={(element) => {
+                          optionRefs.current[index] = element;
+                        }}
+                        key={preset}
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        tabIndex={index === rovingOptionIndex ? 0 : -1}
+                        onClick={() => selectCurve(preset, index)}
+                        onKeyDown={(event) => handleOptionKeyDown(index, event)}
+                        className={cn(
+                          'flex flex-col items-center gap-1 rounded-sm border p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset',
+                          selected
+                            ? 'border-primary/60 bg-primary/10'
+                            : 'border-transparent hover:bg-accent'
+                        )}
+                      >
+                        <CurveThumb bezier={getPresetBezier(preset)} className="h-10 w-10" />
+                        <span
+                          className={cn(
+                            'text-center text-[10px] leading-tight',
+                            selected ? 'font-medium text-foreground' : 'text-muted-foreground'
+                          )}
+                        >
+                          {preset}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -224,7 +224,7 @@ export function SplitTrack({
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Scissors className="h-3.5 w-3.5" />
           <span>
-            {sections.length} section{sections.length === 1 ? '' : 's'} · drag to move, tap to remove
+            {sections.length} clip{sections.length === 1 ? '' : 's'} · drag to move, tap to remove
           </span>
         </div>
         <button
@@ -232,14 +232,14 @@ export function SplitTrack({
           onClick={addSplitAtPlayhead}
           disabled={!canAddAtPlayhead}
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium transition-colors',
+            "relative inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium transition-colors after:absolute after:inset-x-0 after:inset-y-[-4px] after:content-[''] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
             canAddAtPlayhead
               ? 'hover:bg-accent hover:text-accent-foreground'
               : 'cursor-not-allowed opacity-50'
           )}
           title={
             atSectionCap
-              ? `Maximum of ${MAX_SECTIONS} sections reached`
+              ? `Maximum of ${MAX_SECTIONS} clips reached`
               : 'Add a split at the playhead'
           }
         >
@@ -258,7 +258,7 @@ export function SplitTrack({
             return (
               <div
                 key={s}
-                className="absolute top-0 flex -translate-x-1/2 flex-col items-center text-[10px] tabular-nums text-muted-foreground"
+                className="absolute top-0 flex -translate-x-1/2 flex-col items-center font-mono text-[10px] tabular-nums text-muted-foreground"
                 style={{ left: `${timeToPixels(s, pixelsPerSecond)}px` }}
               >
                 <div className="h-1.5 w-px bg-border" />
@@ -285,6 +285,9 @@ export function SplitTrack({
           {thumbnails.map((thumb, i) => (
             <div key={i} className="h-full flex-1 border-r border-black/20 last:border-r-0">
               {thumb && (
+                // Generated object URLs are already local, correctly sized
+                // timeline frames; Next Image optimization adds no benefit.
+                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={thumb}
                   alt=""
@@ -316,7 +319,7 @@ export function SplitTrack({
                     <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-[10px] font-semibold text-foreground">
                       {section.index + 1}
                     </span>
-                    <span className="text-[10px] tabular-nums text-foreground/70">
+                    <span className="font-mono text-[10px] tabular-nums text-foreground/70">
                       {section.duration.toFixed(1)}s
                     </span>
                   </>
@@ -360,7 +363,7 @@ export function SplitTrack({
                 type="button"
                 aria-label={`Split point ${index + 1} at ${formatTime(t)}. Drag to move, Delete to remove.`}
                 className={cn(
-                  'absolute left-0 top-1/2 flex h-16 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center cursor-grab active:cursor-grabbing touch-none',
+                  'absolute left-0 top-1/2 flex h-16 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center cursor-grab active:cursor-grabbing touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
                   disabled && 'cursor-not-allowed'
                 )}
                 onPointerDown={startMarkerDrag(index)}
@@ -373,7 +376,7 @@ export function SplitTrack({
               >
                 <span
                   className={cn(
-                    'pointer-events-none h-4 w-4 rotate-45 rounded-[3px] border-2 border-background bg-primary shadow-md transition-transform',
+                    'pointer-events-none h-4 w-4 rotate-45 rounded-sm border-2 border-background bg-primary shadow-md transition-transform',
                     (isSelected || isDragging) && 'scale-125 ring-2 ring-primary/50'
                   )}
                 />
@@ -383,7 +386,7 @@ export function SplitTrack({
                 <button
                   type="button"
                   aria-label={`Remove split point ${index + 1}`}
-                  className="absolute top-1 left-0 z-40 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:text-destructive"
+                  className="absolute top-1 left-0 z-40 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();

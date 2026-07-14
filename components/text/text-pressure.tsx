@@ -14,11 +14,9 @@ interface TextPressureProps {
   alpha?: boolean;
   flex?: boolean;
   stroke?: boolean;
-  scale?: boolean;
   textColor?: string;
   strokeColor?: string;
   strokeWidth?: number;
-  minFontSize?: number;
   initialAnimationDelay?: number;
   className?: string;
 }
@@ -33,11 +31,9 @@ const TextPressure = ({
   alpha = false,
   flex = true,
   stroke = false,
-  scale = false,
   textColor = "currentColor",
   strokeColor = "#FF0000",
   strokeWidth = 2,
-  minFontSize = 24,
   initialAnimationDelay = 0,
   className,
 }: TextPressureProps) => {

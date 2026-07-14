@@ -6,20 +6,22 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
-  --radius-sm: var(--radius-sm);
-  --radius-md: var(--radius-md);
-  --radius-lg: var(--radius-lg);
-  --radius-xl: var(--radius-xl);
-  --shadow-2xs: var(--shadow-2xs);
-  --shadow-xs: var(--shadow-xs);
-  --shadow-sm: var(--shadow-sm);
-  --shadow-md: var(--shadow-md);
-  --shadow-lg: var(--shadow-lg);
-  --shadow-xl: var(--shadow-xl);
-  --shadow-2xl: var(--shadow-2xl);
-  --shadow: var(--shadow);
+  --font-sans: var(--app-font-sans);
+  --font-mono: var(--app-font-mono);
+  --radius-xs: calc(var(--radius) - 0.25rem);
+  --radius-sm: calc(var(--radius) - 0.25rem);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 0.25rem);
+  --radius-xl: calc(var(--radius) + 0.5rem);
+  --radius-2xl: calc(var(--radius) + 0.5rem);
+  --shadow-2xs: var(--app-shadow-2xs);
+  --shadow-xs: var(--app-shadow-xs);
+  --shadow-sm: var(--app-shadow-sm);
+  --shadow-md: var(--app-shadow-md);
+  --shadow-lg: var(--app-shadow-lg);
+  --shadow-xl: var(--app-shadow-xl);
+  --shadow-2xl: var(--app-shadow-2xl);
+  --shadow: var(--app-shadow);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -53,7 +55,8 @@
 }
 
 :root {
-  --radius: 0.625rem;
+  color-scheme: dark;
+  --radius: 0.5rem;
   --background: oklch(0.22 0.02 212.538);
   --foreground: oklch(1 0 0);
   --card: oklch(0.24 0.02 212.538);
@@ -71,70 +74,33 @@
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.315 0.023 209.607);
   --input: oklch(0.315 0.023 209.607);
-  --ring: oklch(0.951 0.121 125.737);
-  --chart-1: oklch(0.951 0.121 125.737);
-  --chart-2: oklch(0.8 0.121 125.737);
-  --chart-3: oklch(0.7 0.121 125.737);
-  --chart-4: oklch(0.6 0.121 125.737);
-  --chart-5: oklch(0.5 0.121 125.737);
+  --ring: var(--primary);
+  --chart-1: var(--primary);
+  --chart-2: oklch(0.88 0.105 126);
+  --chart-3: oklch(0.8 0.09 126);
+  --chart-4: oklch(0.72 0.08 126);
+  --chart-5: oklch(0.64 0.07 126);
   --sidebar: oklch(0.2 0.02 212.538);
   --sidebar-foreground: oklch(1 0 0);
-  --sidebar-primary: oklch(0.951 0.121 125.737);
+  --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: oklch(0.2 0.02 212.538);
   --sidebar-accent: oklch(0.25 0.02 212.538);
   --sidebar-accent-foreground: oklch(1 0 0);
   --sidebar-border: oklch(0.315 0.023 209.607);
-  --sidebar-ring: oklch(0.951 0.121 125.737);
+  --sidebar-ring: var(--primary);
   --destructive-foreground: oklch(1 0 0);
-  --font-sans: Inter, sans-serif;
-  --radius-sm: 0.5rem;
-  --radius-md: 0.65rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
-  --shadow-2xs: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.05);
-  --shadow-xs: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.05);
-  --shadow-sm: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 1px 2px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
-  --shadow: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 1px 2px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
-  --shadow-md: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 2px 4px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
-  --shadow-lg: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 4px 6px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
-  --shadow-xl: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 8px 10px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
-  --shadow-2xl: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.25);
+  --app-font-sans: 'Helvetica Neue', Helvetica, sans-serif;
+  --app-font-mono: var(--font-dm-mono), 'DM Mono', monospace;
+  --app-shadow-2xs: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.05);
+  --app-shadow-xs: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.05);
+  --app-shadow-sm: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 1px 2px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
+  --app-shadow: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 1px 2px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
+  --app-shadow-md: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 2px 4px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
+  --app-shadow-lg: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 4px 6px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
+  --app-shadow-xl: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.1), 0 8px 10px -1px hsl(190.5457 54.9218% 5.7661% / 0.1);
+  --app-shadow-2xl: 0 1px 3px 0px hsl(190.5457 54.9218% 5.7661% / 0.25);
   --ease-out-smooth: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-interactive: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
 }
 
 @layer base {
@@ -273,17 +239,12 @@
   transition-timing-function: var(--ease-interactive);
 }
 
-.landing-drop-zone:hover,
 .landing-drop-zone:focus-visible {
-  transform: translateY(-2px);
+  transform: none;
   box-shadow:
     0 1px 0 rgb(255 255 255 / 0.06) inset,
     0 24px 70px rgb(0 0 0 / 0.2),
     0 0 0 1px color-mix(in srgb, var(--primary) 8%, transparent);
-}
-
-.landing-drop-zone:active {
-  transform: translateY(0) scale(0.99);
 }
 
 .motion-icon {
@@ -292,17 +253,44 @@
   transition-timing-function: var(--ease-interactive);
 }
 
-.group:hover .motion-icon,
 .group:focus-visible .motion-icon {
   color: var(--primary);
-  transform: translateY(-3px) scale(1.06);
+  transform: none;
   filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--primary) 25%, transparent));
 }
 
-.landing-drop-zone:hover .upload-motion-icon,
 .landing-drop-zone:focus-visible .upload-motion-icon {
   color: var(--foreground);
   filter: drop-shadow(0 6px 14px rgb(255 255 255 / 0.18));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .landing-drop-zone:hover:not(:focus-visible):not(:active) {
+    transform: translateY(-2px);
+    box-shadow:
+      0 1px 0 rgb(255 255 255 / 0.06) inset,
+      0 24px 70px rgb(0 0 0 / 0.2),
+      0 0 0 1px color-mix(in srgb, var(--primary) 8%, transparent);
+  }
+
+  .group:hover:not(:focus-visible) .motion-icon {
+    color: var(--primary);
+    transform: translateY(-3px) scale(1.06);
+    filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--primary) 25%, transparent));
+  }
+
+  .landing-drop-zone:hover:not(:focus-visible) .upload-motion-icon {
+    color: var(--foreground);
+    filter: drop-shadow(0 6px 14px rgb(255 255 255 / 0.18));
+  }
+
+  .landing-footer-link:hover:not(:focus-visible) {
+    transform: translateY(-1px);
+  }
+}
+
+.landing-drop-zone:active {
+  transform: translateY(0) scale(0.99);
 }
 
 /* Tempo dot in the beat-snap pill: sharp hit on the beat, eased decay. */
@@ -318,18 +306,39 @@
   }
 }
 
+@keyframes reduced-motion-loading {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
   .beat-pulse-dot {
     animation: none !important;
   }
 
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+  .animate-spin {
+    animation: reduced-motion-loading 800ms ease-in-out infinite !important;
+  }
+
+  .landing-drop-zone,
+  .motion-icon,
+  .landing-footer-link {
+    transform: none !important;
+  }
+
+  button:active,
+  [role='button']:active,
+  [role='tab']:active {
+    scale: 1 !important;
   }
 }
 

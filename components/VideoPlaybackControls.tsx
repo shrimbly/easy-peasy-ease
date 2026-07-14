@@ -3,6 +3,7 @@
 import { ReactNode } from 'react';
 import { Play, Pause } from 'lucide-react';
 import { formatTime } from '@/lib/timeline-utils';
+import { Button } from '@/components/ui/button';
 
 interface VideoPlaybackControlsProps {
   isPlaying: boolean;
@@ -24,20 +25,23 @@ export function VideoPlaybackControls({
   return (
     <div className="flex w-full flex-wrap items-center justify-between gap-2 md:gap-4">
       <div className="flex items-center gap-2 md:gap-4 flex-1 min-w-0">
-        <button
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-lg"
           onClick={onPlayPause}
-          className="p-0 shrink-0 hover:opacity-70 transition-opacity"
+          className="shrink-0"
           aria-label={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? (
-            <Pause className="h-5 w-5 md:h-6 md:w-6" />
+            <Pause className="size-6" />
           ) : (
-            <Play className="h-5 w-5 md:h-6 md:w-6 ml-0.5" />
+            <Play className="ml-0.5 size-7" />
           )}
-        </button>
+        </Button>
 
         <div className="flex items-center gap-3 md:gap-6 flex-1 min-w-0">
-          <div className="text-xs md:text-sm font-medium text-muted-foreground tabular-nums whitespace-nowrap">
+          <div className="whitespace-nowrap font-mono text-xs font-medium tabular-nums text-muted-foreground md:text-sm">
             {formatTime(currentTime)} / {formatTime(duration)}
           </div>
 
@@ -46,7 +50,7 @@ export function VideoPlaybackControls({
       </div>
       
       {videoSize !== undefined && (
-        <div className="hidden sm:flex items-center gap-4 text-xs text-muted-foreground shrink-0">
+        <div className="hidden shrink-0 items-center gap-4 font-mono text-xs text-muted-foreground sm:flex">
           <span>Size: {(videoSize / 1024 / 1024).toFixed(2)}MB</span>
         </div>
       )}

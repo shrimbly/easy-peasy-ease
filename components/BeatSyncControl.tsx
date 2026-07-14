@@ -50,17 +50,17 @@ export function BeatSyncControl({
           className="beat-pulse-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
           style={{ animation: `beat-pulse ${period}s ease-out infinite` }}
         />
-        <span className="text-[11px] font-semibold tabular-nums leading-none text-foreground">
+        <span className="font-mono text-[11px] font-semibold tabular-nums leading-none text-foreground">
           {Math.round(bpm)}
         </span>
-        <span className="text-[9px] font-semibold uppercase tracking-wide leading-none text-muted-foreground">
+        <span className="text-[10px] font-semibold uppercase tracking-wide leading-none text-muted-foreground">
           bpm
         </span>
       </span>
 
       <div className="h-4 w-px bg-border" aria-hidden />
 
-      <div role="group" aria-label="Snap section lengths to beats" className="flex items-center gap-0.5">
+      <div role="group" aria-label="Snap clip lengths to beats" className="flex items-center gap-0.5">
         {BEAT_SUBDIVISIONS.map((subdivision) => {
           const active = value === subdivision;
           return (
@@ -72,7 +72,7 @@ export function BeatSyncControl({
               title={subdivisionLabel(subdivision)}
               onClick={() => onValueChange(active ? 0 : subdivision)}
               className={cn(
-                'h-6 min-w-6 rounded-sm px-1 text-[11px] font-semibold tabular-nums transition-colors',
+                'h-8 min-w-8 rounded-sm px-1 font-mono text-[11px] font-semibold tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset',
                 active
                   ? 'bg-primary text-primary-foreground shadow-sm'
                   : 'text-muted-foreground hover:bg-secondary/80 hover:text-foreground'
@@ -89,11 +89,11 @@ export function BeatSyncControl({
           <div className="h-4 w-px bg-border" aria-hidden />
           <button
             type="button"
-            aria-label="Update video with beat-synced sections"
+            aria-label="Update video with beat-synced clips"
             title="Update video"
             onClick={onApply}
             disabled={isUpdating}
-            className="flex h-6 w-6 items-center justify-center rounded-sm text-primary transition-colors hover:bg-primary/10 disabled:pointer-events-none disabled:opacity-50"
+            className="flex h-8 w-8 items-center justify-center rounded-sm text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-50"
           >
             {isUpdating ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />

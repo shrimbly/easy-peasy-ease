@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getGeneratedVideoPreviewTransform,
   getVideoPreviewAspectRatio,
   getVideoPreviewRotationDegrees,
   getVideoPreviewTransform,
@@ -18,6 +19,28 @@ describe('getVideoPreviewAspectRatio', () => {
     expect(getVideoPreviewAspectRatio()).toBe('16 / 9');
     expect(getVideoPreviewAspectRatio(0, 1920)).toBe('16 / 9');
     expect(getVideoPreviewAspectRatio(1080, -1)).toBe('16 / 9');
+  });
+});
+
+describe('getGeneratedVideoPreviewTransform', () => {
+  it('undoes carried rotation even when generated video dimensions already look correct', () => {
+    expect(
+      getGeneratedVideoPreviewTransform({
+        expectedWidth: 1080,
+        expectedHeight: 1350,
+        trackRotation: 90,
+      })
+    ).toBe('rotate(-90deg) scale(1.25)');
+  });
+
+  it('preserves a carried half-turn without swapping the preview dimensions', () => {
+    expect(
+      getGeneratedVideoPreviewTransform({
+        expectedWidth: 1080,
+        expectedHeight: 1350,
+        trackRotation: 180,
+      })
+    ).toBe('rotate(180deg)');
   });
 });
 

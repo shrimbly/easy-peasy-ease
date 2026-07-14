@@ -1,11 +1,12 @@
 'use client';
 
-import { ReactNode, useEffect, useRef, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { TransitionVideo } from '@/lib/types';
 import {
   calculateSegmentBoundaries,
   clamp,
   getTotalDuration,
+  formatTime,
   pixelsToTime,
   timeToPixels,
 } from '@/lib/timeline-utils';
@@ -51,12 +52,12 @@ export function TimelineZoomSlider({ value, onValueChange, disabled }: ZoomSlide
   const sliderRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const updateValueFromPointer = (clientX: number) => {
+  const updateValueFromPointer = useCallback((clientX: number) => {
     if (!sliderRef.current) return;
     const rect = sliderRef.current.getBoundingClientRect();
     const rawValue = (clientX - rect.left) / rect.width;
     onValueChange(clamp(rawValue, 0, 1));
-  };
+  }, [onValueChange]);
 
   const startDragging = (clientX: number) => {
     if (disabled) return;
@@ -109,17 +110,48 @@ export function TimelineZoomSlider({ value, onValueChange, disabled }: ZoomSlide
       window.removeEventListener('touchend', stopDragging);
       window.removeEventListener('touchcancel', stopDragging);
     };
-  }, [isDragging, disabled]);
+  }, [isDragging, disabled, updateValueFromPointer]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    const step = event.shiftKey ? 0.1 : 0.05;
+    const adjustments: Record<string, number> = {
+      ArrowDown: -step,
+      ArrowLeft: -step,
+      ArrowRight: step,
+      ArrowUp: step,
+    };
+
+    if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      onValueChange(event.key === 'Home' ? 0 : 1);
+      return;
+    }
+
+    const adjustment = adjustments[event.key];
+    if (adjustment === undefined) return;
+    event.preventDefault();
+    onValueChange(clamp(value + adjustment, 0, 1));
+  };
 
   return (
     <div
       ref={sliderRef}
       className={cn(
-        'relative h-8 w-[70px] md:w-[100px] cursor-pointer select-none touch-none',
+        'relative h-8 w-[70px] md:w-[100px] cursor-pointer select-none touch-none rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
         disabled && 'cursor-not-allowed opacity-50'
       )}
+      role="slider"
+      tabIndex={disabled ? -1 : 0}
+      aria-label="Timeline zoom"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(value * 100)}
+      aria-valuetext={`${Math.round(value * 100)}%`}
+      aria-disabled={disabled}
       onMouseDown={handleMouseDown}
       onTouchStart={handleTouchStart}
+      onKeyDown={handleKeyDown}
     >
       {/* Track + thumb match the themed range sliders: bright fill left of the
           thumb, dim to the right, primary thumb with a background ring. */}
@@ -130,7 +162,7 @@ export function TimelineZoomSlider({ value, onValueChange, disabled }: ZoomSlide
         }}
       />
       <div
-        className="absolute top-1/2 h-4 w-4 -translate-y-1/2 -translate-x-1/2 rounded-full border-2 border-background bg-primary shadow transition-transform touch-none"
+        className="absolute top-1/2 h-4 w-4 -translate-y-1/2 -translate-x-1/2 rounded-full border-2 border-background bg-primary shadow transition-transform touch-none after:absolute after:left-1/2 after:top-1/2 after:size-10 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']"
         style={{ left: `${value * 100}%` }}
       />
     </div>
@@ -302,6 +334,27 @@ export function VideoTimeline({
     }
   };
 
+  const handlePlayheadKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 1 : 0.1;
+    const adjustments: Record<string, number> = {
+      ArrowDown: -step,
+      ArrowLeft: -step,
+      ArrowRight: step,
+      ArrowUp: step,
+    };
+
+    if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      onSeek(event.key === 'Home' ? 0 : totalDuration);
+      return;
+    }
+
+    const adjustment = adjustments[event.key];
+    if (adjustment === undefined) return;
+    event.preventDefault();
+    onSeek(clamp(normalizedTime + adjustment, 0, totalDuration));
+  };
+
   useEffect(() => {
     if (!isDragging) return;
 
@@ -397,7 +450,7 @@ export function VideoTimeline({
                 return (
                   <div
                     key={index}
-                    className="absolute flex -translate-x-1/2 flex-col items-center text-[10px] font-medium text-muted-foreground tabular-nums"
+                    className="absolute flex -translate-x-1/2 flex-col items-center font-mono text-[10px] font-medium tabular-nums text-muted-foreground"
                     style={{ left: `${tickPosition}px` }}
                   >
                     <div className="h-1 md:h-2 w-px bg-border" />
@@ -438,6 +491,9 @@ export function VideoTimeline({
                     >
                       {/* Thumbnail */}
                       {thumbnails[boundary.segment.id] && (
+                        // Generated object URLs are local timeline frames;
+                        // Next Image optimization would only add overhead.
+                        // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={thumbnails[boundary.segment.id]}
                           alt={boundary.segment.name}
@@ -467,8 +523,16 @@ export function VideoTimeline({
                 style={{ left: `${playheadPosition}px` }}
               >
                 <div
-                  className="pointer-events-auto absolute top-0 left-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-background bg-primary shadow-lg cursor-grab active:cursor-grabbing touch-none"
+                  className="pointer-events-auto absolute top-0 left-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-background bg-primary shadow-lg cursor-grab active:cursor-grabbing touch-none after:absolute after:left-1/2 after:top-1/2 after:size-10 after:-translate-x-1/2 after:-translate-y-1/2 after:content-[''] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                  role="slider"
+                  tabIndex={0}
+                  aria-label="Timeline playhead"
+                  aria-valuemin={0}
+                  aria-valuemax={totalDuration}
+                  aria-valuenow={normalizedTime}
+                  aria-valuetext={formatTime(normalizedTime)}
                   onPointerDown={handlePlayheadPointerDown}
+                  onKeyDown={handlePlayheadKeyDown}
                 />
                 <div className="absolute inset-0 -left-px w-1 bg-primary/30 blur-sm -z-10" />
               </div>
