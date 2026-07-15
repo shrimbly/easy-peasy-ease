@@ -36,7 +36,7 @@ interface AudioWaveformVisualizationProps {
   isBeatUpdating?: boolean;
 }
 
-const AUDIO_TRACK_HEIGHT = 48;
+const AUDIO_TRACK_HEIGHT = 72;
 
 const positiveModulo = (value: number, modulus: number): number => {
   const result = value % modulus;
@@ -195,9 +195,6 @@ export function AudioWaveformVisualization({
   // Calculate the width of the actual waveform
   const waveformWidthPixels = Math.max(0, trackWidth - silenceWidthPixels);
 
-  // Check if there's more audio beyond what's visible
-  const hasMoreAudioAtEnd = audioEndTime < audioDurationSeconds;
-
   // Beat ticks: faint lines on every beat (anchored to the audio, so they
   // follow the waveform live while dragging), plus brighter lines marking the
   // active every-Nth-beat grid section boundaries snap to. Rendered as
@@ -278,7 +275,7 @@ export function AudioWaveformVisualization({
             <Trash2 className="h-4 w-4" />
           </Button>
         )}
-        <div className="flex h-12">
+        <div className="flex h-[72px]">
           {/* Silence/gap at the start when offset > 0 */}
           {silenceWidthPixels > 0 && (
             <div
@@ -353,13 +350,6 @@ export function AudioWaveformVisualization({
               No steady beat
             </span>
           )}
-        {hasMoreAudioAtEnd && (
-          <div className="pointer-events-none absolute inset-y-0 right-0 flex w-24 items-center justify-end bg-gradient-to-l from-background/90 via-background/10 to-transparent pr-3">
-            <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-background">
-              More audio
-            </span>
-          </div>
-        )}
       </div>
     </div>
   );

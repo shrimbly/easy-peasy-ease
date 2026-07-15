@@ -32,7 +32,7 @@ export function AudioUploadBox({ onAudioSelect, disabled = false }: AudioUploadB
       <div
         className={cn(
           'rounded-md border-2 border-dashed border-muted-foreground/30 px-3 py-1 text-center transition-colors',
-          'flex h-10 items-center justify-center cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset',
+          'flex h-[72px] items-center justify-center cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset',
           !disabled && 'hover:border-muted-foreground/50',
           disabled && 'opacity-50 cursor-not-allowed'
         )}
